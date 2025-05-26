@@ -9,77 +9,168 @@ import pyaudio
 import wave
 import cv2
 import face_recognition
-import torch
-import torchaudio
 from sentence_transformers import SentenceTransformer
 from utils.sound_util import speak
 from WinForm.giay_tam_tru import run_gtt
 import threading
-import queue
-import sounddevice as sd
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst, GLib
+import nvidia.cuda as cuda
+import nvidia.cuda.runtime as cuda_runtime
 
-# Kiểm tra và sử dụng CUDA nếu có
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Sử dụng thiết bị: {DEVICE}")
+# Initialize GStreamer
+Gst.init(None)
 
 MODEL_PATH = "trained_model"
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 card_service_socket = socketio.Client()
 
-class JetsonApp:
+class JetsonCamera:
     def __init__(self):
-        # Khởi tạo kết nối serial
+        self.pipeline = None
+        self.sink = None
+        self.bus = None
+        self.is_running = False
+        self.frame = None
+        self.lock = threading.Lock()
+        self.initialize_pipeline()
+
+    def initialize_pipeline(self):
+        try:
+            # Create GStreamer pipeline optimized for Jetson
+            pipeline_str = (
+                "nvarguscamerasrc ! "
+                "video/x-raw(memory:NVMM), width=1280, height=720, format=NV12, framerate=30/1 ! "
+                "nvvidconv ! "
+                "video/x-raw, format=BGRx ! "
+                "videoconvert ! "
+                "video/x-raw, format=BGR ! "
+                "appsink name=sink"
+            )
+            self.pipeline = Gst.parse_launch(pipeline_str)
+            self.sink = self.pipeline.get_by_name("sink")
+            self.sink.set_property("emit-signals", True)
+            self.sink.connect("new-sample", self.on_new_sample)
+            
+            self.bus = self.pipeline.get_bus()
+            self.bus.add_signal_watch()
+            self.bus.connect("message", self.on_message)
+            
+            self.pipeline.set_state(Gst.State.PLAYING)
+            self.is_running = True
+            print("Jetson camera initialized successfully")
+        except Exception as e:
+            print(f"Error initializing Jetson camera: {e}")
+            self.is_running = False
+
+    def on_new_sample(self, sink):
+        try:
+            sample = sink.emit("pull-sample")
+            if sample:
+                buffer = sample.get_buffer()
+                caps = sample.get_caps()
+                structure = caps.get_structure(0)
+                width = structure.get_value("width")
+                height = structure.get_value("height")
+                
+                success, map_info = buffer.map(Gst.MapFlags.READ)
+                if success:
+                    with self.lock:
+                        self.frame = np.ndarray(
+                            shape=(height, width, 3),
+                            dtype=np.uint8,
+                            buffer=map_info.data
+                        ).copy()
+                    buffer.unmap(map_info)
+                return Gst.FlowReturn.OK
+        except Exception as e:
+            print(f"Error in on_new_sample: {e}")
+        return Gst.FlowReturn.ERROR
+
+    def on_message(self, bus, message):
+        t = message.type
+        if t == Gst.MessageType.ERROR:
+            self.is_running = False
+            err, debug = message.parse_error()
+            print(f"Error: {err.message}")
+            print(f"Debug info: {debug}")
+
+    def read(self):
+        with self.lock:
+            if self.frame is not None:
+                return True, self.frame.copy()
+        return False, None
+
+    def release(self):
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.is_running = False
+
+class MainApp:
+    def __init__(self):
+        # Initialize CUDA
+        try:
+            cuda_runtime.init()
+            print("CUDA initialized successfully")
+        except Exception as e:
+            print(f"Error initializing CUDA: {e}")
+
+        # Initialize serial connection
         try:
             self.serial_port = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-            print(f"Đã kết nối với cổng serial {SERIAL_PORT}")
+            print(f"Connected to serial port {SERIAL_PORT}")
         except Exception as e:
-            print(f"Lỗi kết nối serial: {e}")
+            print(f"Serial connection error: {e}")
             self.serial_port = None
 
-        # Thêm biến theo dõi trạng thái xác thực
+        # Authentication state
         self.is_authenticated = False
         self.current_user = None
 
-        # Kết nối socket với xử lý lỗi
+        # Connect to card service
         try:
-            print("Đang kết nối đến server thẻ...")
+            print("Connecting to card server...")
             card_service_socket.connect("http://192.168.5.1:8000", wait_timeout=10)
             card_service_socket.on("/event", self.handle_card_event)
-            print("Đã kết nối thành công đến server thẻ")
+            print("Successfully connected to card server")
         except Exception as e:
-            print(f"Không thể kết nối đến server thẻ: {e}")
-            speak("Không thể kết nối đến bộ đọc thẻ. Vui lòng kiểm tra kết nối mạng và khởi động lại chương trình.")
+            print(f"Could not connect to card server: {e}")
+            print("Please check:")
+            print("1. Card server IP address (192.168.5.1)")
+            print("2. Card server is running")
+            print("3. Network connection between computer and card server")
+            speak("Could not connect to card reader. Please check network connection and restart the program.")
 
-        # Khởi tạo camera với CUDA acceleration
-        self.camera = None
-        self.camera_lock = threading.Lock()
-        self.initialize_camera()
+        # Initialize Jetson camera
+        self.camera = JetsonCamera()
+        if not self.camera.is_running:
+            speak("Could not initialize camera. Please check the device.")
 
-        # Load mô hình đã được huấn luyện với CUDA
+        # Load model
         try:
-            self.model = SentenceTransformer(MODEL_PATH).to(DEVICE)
+            self.model = SentenceTransformer(MODEL_PATH)
             encoded_templates_path = os.path.join(MODEL_PATH, "encoded_templates.npy")
             if os.path.exists(encoded_templates_path):
                 loaded_data = np.load(encoded_templates_path, allow_pickle=True).item()
-                self.encoded_templates = {k: torch.tensor(v).to(DEVICE) for k, v in loaded_data.items()}
-                print("Đã tải encoded_templates thành công")
+                self.encoded_templates = {k: np.array(v) for k, v in loaded_data.items()}
+                print("Successfully loaded encoded_templates")
             else:
-                print(f"Không tìm thấy file {encoded_templates_path}")
+                print(f"File {encoded_templates_path} not found")
                 self.encoded_templates = {}
         except Exception as e:
-            print(f"Lỗi khi tải model: {e}")
-            self.model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2").to(DEVICE)
+            print(f"Error loading model or encoded_templates: {e}")
+            self.model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
             self.encoded_templates = {}
 
-        # Khởi tạo PyAudio với CUDA acceleration
+        # Initialize audio
         try:
             self.audio = pyaudio.PyAudio()
             self.speech = sr.Recognizer()
-            self.audio_queue = queue.Queue()
-            print("Đã khởi tạo PyAudio thành công")
+            print("Successfully initialized PyAudio")
         except Exception as e:
-            print(f"Lỗi khởi tạo PyAudio: {e}")
+            print(f"Error initializing PyAudio: {e}")
             self.audio = None
             self.speech = None
 
@@ -90,135 +181,110 @@ class JetsonApp:
             "khai sinh cho trẻ em", "chứng thực giấy tờ"
         ]
 
-    def initialize_camera(self):
-        """Khởi tạo camera với CUDA acceleration"""
-        try:
-            self.camera = cv2.VideoCapture(0)
-            if not self.camera.isOpened():
-                raise Exception("Không thể mở camera")
+    def handle_card_event(self, data):
+        """Handle card events"""
+        event_id = data.get("id")
+        if event_id == 2:  # Successful card read
+            card_data = data.get("data", {})
+            name = card_data.get("personName", "user")
+            id_cccd = card_data.get("idCode","")
+            if (id_cccd):
+                speak(f"Hello, {name}!")
+                os.makedirs("temp", exist_ok=True)
+                with open("temp/card_data.json", "w", encoding="utf-8") as f:
+                    json.dump(card_data, f, ensure_ascii=False, indent=4)
+                
+                if os.path.exists("temp/card_image.jpg"):
+                    speak("Face detected from ID card!")
+                    captured_face_path = self.capture_face()
+                    if captured_face_path:
+                        speak("Face captured. Comparing with ID card...")
+                        matched = self.compare_faces("temp/card_image.jpg", captured_face_path)
+                        if matched:
+                            speak("Face authentication successful!")
+                            self.is_authenticated = True
+                            self.current_user = name
+                        else:
+                            speak("Face does not match ID card. Please try again.")
+                            self.is_authenticated = False
+                            self.current_user = None
+                    else:
+                        speak("Could not capture face. Please check camera.")
+                        self.is_authenticated = False
+                        self.current_user = None
+        elif event_id == 4:  # Receive image from card
+            img_data = data.get("data", {}).get("img_data")
+            if img_data:
+                os.makedirs("temp", exist_ok=True)
+                with open("temp/card_image.jpg", "wb") as img_file:
+                    if isinstance(img_data, str):
+                        import base64
+                        img_file.write(base64.b64decode(img_data))
+                    elif isinstance(img_data, bytes):
+                        img_file.write(img_data)
+                print("Saved ID card image")
 
-            # Cấu hình camera cho CUDA
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.camera.set(cv2.CAP_PROP_FPS, 30)
-
-            # Kiểm tra camera
-            ret, frame = self.camera.read()
-            if not ret:
-                raise Exception("Không thể đọc frame từ camera")
-
-            print("Đã khởi tạo camera thành công với CUDA acceleration")
-            return True
-        except Exception as e:
-            print(f"Lỗi khởi tạo camera: {e}")
-            return False
-
-    def record_audio(self, duration=3):
-        """Ghi âm với CUDA acceleration"""
-        if not self.audio:
+    def capture_face(self):
+        """Capture face using Jetson camera"""
+        if not self.camera.is_running:
+            print("Camera not available")
             return None
 
-        CHUNK = 1024
-        FORMAT = pyaudio.paFloat32
-        CHANNELS = 1
-        RECORD_SECONDS = duration
+        speak("Please look at the camera")
+        face_frames = []
+        start_time = time.time()
+        
+        while time.time() - start_time < 7:  # 7 seconds capture
+            ret, frame = self.camera.read()
+            if not ret or frame is None:
+                continue
 
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_locations = face_recognition.face_locations(rgb_frame)
+
+            if face_locations:
+                top, right, bottom, left = face_locations[0]
+                face_frames.append(frame[top:bottom, left:right])
+
+        if not face_frames:
+            print("No face detected in video")
+            return None
+
+        os.makedirs("temp", exist_ok=True)
+        video_path = "temp/captured_face_video.mp4"
+        
         try:
-            # Tìm thiết bị USB Audio
-            device_index, sample_rate = self.find_usb_audio_device()
-            device_info = self.audio.get_device_info_by_index(device_index)
-            print(f"Đang sử dụng thiết bị: {device_info['name']}")
-            print(f"Tần số lấy mẫu: {sample_rate}Hz")
-
-            # Tạo thư mục audio
-            os.makedirs("audio", exist_ok=True)
-
-            # Khởi tạo stream với CUDA acceleration
-            stream = self.audio.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=int(sample_rate),
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=CHUNK
-            )
-
-            print("Đang ghi âm...")
-            frames = []
+            height, width = face_frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(video_path, fourcc, 20.0, (width, height))
             
-            # Sử dụng CUDA cho xử lý âm thanh
-            audio_buffer = torch.zeros((int(sample_rate * RECORD_SECONDS),), device=DEVICE)
-            buffer_index = 0
+            for frame in face_frames:
+                out.write(frame)
             
-            for i in range(0, int(sample_rate / CHUNK * RECORD_SECONDS)):
-                try:
-                    data = stream.read(CHUNK, exception_on_overflow=False)
-                    frames.append(data)
-                    
-                    # Chuyển đổi dữ liệu âm thanh sang tensor và đưa lên GPU
-                    audio_data = torch.frombuffer(data, dtype=torch.float32).to(DEVICE)
-                    audio_buffer[buffer_index:buffer_index + len(audio_data)] = audio_data
-                    buffer_index += len(audio_data)
-                    
-                    # Tính toán mức âm thanh trên GPU
-                    current_amplitude = torch.abs(audio_data).mean().item()
-                    
-                    # Phát hiện giọng nói
-                    if current_amplitude > 0.1:  # Ngưỡng có thể điều chỉnh
-                        silence_counter = 0
-                    else:
-                        silence_counter += 1
-                        if silence_counter > int(sample_rate / CHUNK * 1.0):
-                            break
-                    
-                except Exception as e:
-                    print(f"Lỗi khi đọc chunk {i}: {e}")
-                    continue
-
-            print("Đã ghi âm xong")
-            stream.stop_stream()
-            stream.close()
-
-            # Tạo tên file với timestamp
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            temp_file = f"audio/recording_{timestamp}.wav"
-            
-            # Lưu file với chất lượng cao
-            wf = wave.open(temp_file, 'wb')
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(self.audio.get_sample_size(FORMAT))
-            wf.setframerate(int(sample_rate))
-            wf.writeframes(b''.join(frames))
-            wf.close()
-
-            print(f"Đã lưu file âm thanh tại: {temp_file}")
-            return temp_file
+            out.release()
+            print(f"Video saved successfully at: {video_path}")
+            return video_path
         except Exception as e:
-            print(f"Lỗi khi ghi âm: {e}")
+            print(f"Error saving video: {e}")
             return None
 
     def compare_faces(self, card_image_path, captured_video_path):
-        """So sánh khuôn mặt với CUDA acceleration"""
+        """Compare faces using GPU acceleration"""
         try:
-            # Load và chuyển ảnh thẻ lên GPU
             card_image = face_recognition.load_image_file(card_image_path)
-            card_face_locations = face_recognition.face_locations(card_image, model="cnn")
+            card_face_locations = face_recognition.face_locations(card_image)
             
             if not card_face_locations:
-                print("Không tìm thấy khuôn mặt trong ảnh thẻ")
+                print("No face found in ID card image")
                 return False
 
-            # Mã hóa khuôn mặt từ ảnh thẻ
             card_face_encoding = face_recognition.face_encodings(card_image, card_face_locations)[0]
-            card_face_encoding = torch.tensor(card_face_encoding).to(DEVICE)
 
-            # Đọc video
             cap = cv2.VideoCapture(captured_video_path)
             if not cap.isOpened():
-                print("Không thể mở video")
+                print("Could not open video")
                 return False
 
-            # Lưu trữ các độ tương đồng
             similarities = []
             
             while cap.isOpened():
@@ -226,88 +292,53 @@ class JetsonApp:
                 if not ret:
                     break
 
-                # Chuyển đổi frame sang RGB và đưa lên GPU
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_locations = face_recognition.face_locations(rgb_frame, model="cnn")
+                face_locations = face_recognition.face_locations(rgb_frame)
                 
                 if face_locations:
-                    # Mã hóa khuôn mặt từ frame
                     face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
-                    face_encoding = torch.tensor(face_encoding).to(DEVICE)
-                    
-                    # Tính khoảng cách trên GPU
-                    face_distance = torch.norm(card_face_encoding - face_encoding)
-                    similarity = 1 - face_distance.item()
+                    face_distance = face_recognition.face_distance([card_face_encoding], face_encoding)[0]
+                    similarity = 1 - face_distance
                     similarities.append(similarity)
 
             cap.release()
 
             if not similarities:
-                print("Không tìm thấy khuôn mặt trong video")
+                print("No face found in video")
                 return False
 
-            # Tính độ tương đồng trung bình
             avg_similarity = sum(similarities) / len(similarities)
-            print(f"Độ tương đồng trung bình: {avg_similarity:.2%}")
+            print(f"Average similarity: {avg_similarity:.2%}")
             
-            # Ngưỡng độ tương đồng
             SIMILARITY_THRESHOLD = 0.5
             
-            # Kiểm tra độ tương đồng
             if avg_similarity >= SIMILARITY_THRESHOLD:
-                print("Xác thực khuôn mặt thành công")
+                print("Face authentication successful")
                 if os.path.exists(captured_video_path):
                     os.remove(captured_video_path)
                 return True
             else:
-                print("Xác thực khuôn mặt thất bại")
+                print("Face authentication failed")
                 if os.path.exists(captured_video_path):
                     os.remove(captured_video_path)
                 return False
 
         except Exception as e:
-            print(f"Lỗi khi so sánh khuôn mặt: {e}")
+            print(f"Error comparing faces: {e}")
             if os.path.exists(captured_video_path):
                 os.remove(captured_video_path)
             return False
 
-    def predict_action(self, input_text):
-        """Dự đoán hành động với CUDA acceleration"""
-        # Chuyển input text lên GPU
-        input_embedding = self.model.encode([input_text])[0]
-        input_embedding = torch.tensor(input_embedding).to(DEVICE)
-        
-        best_score = -float("inf")
-        best_action = None
-
-        for action, embeddings in self.encoded_templates.items():
-            # Tính toán độ tương đồng trên GPU
-            similarities = torch.matmul(embeddings, input_embedding) / (
-                torch.norm(embeddings, dim=1) * torch.norm(input_embedding)
-            )
-            max_similarity = torch.max(similarities).item()
-
-            if max_similarity > best_score:
-                best_score = max_similarity
-                best_action = action
-
-        return best_action, best_score
-
     def __del__(self):
-        """Dọn dẹp khi đóng chương trình"""
-        with self.camera_lock:
-            if hasattr(self, 'camera') and self.camera:
-                self.camera.release()
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
+        """Cleanup when closing the program"""
+        if hasattr(self, 'camera'):
+            self.camera.release()
         if hasattr(self, 'audio') and self.audio:
             self.audio.terminate()
-        # Giải phóng bộ nhớ GPU
-        torch.cuda.empty_cache()
 
 def run_app():
-    app = JetsonApp()
-    print("\nDanh sách dịch vụ có sẵn:")
+    app = MainApp()
+    print("\nAvailable services:")
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
     
@@ -322,4 +353,4 @@ def run_app():
         time.sleep(0.1)
 
 if __name__ == "__main__":
-    run_app()
+    run_app() 
