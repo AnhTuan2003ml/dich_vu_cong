@@ -1,4 +1,3 @@
-
 import cv2
 import threading
 from WinForm.giay_tam_tru import run_gtt
@@ -241,7 +240,7 @@ class MainApp:
                 print("Đã lưu ảnh từ thẻ CCCD")
 
     def capture_face(self):
-        """Chụp ảnh khuôn mặt sử dụng camera Jetson"""
+        """Chụp video khuôn mặt sử dụng camera USB"""
         if not self.camera.is_running:
             print("Camera không khả dụng")
             return None
@@ -253,78 +252,100 @@ class MainApp:
             time.sleep(0.5)
 
         speak("Vui lòng nhìn thẳng vào camera")
-        face_frames = []
-        start_time = time.time()
-
-        while time.time() - start_time < 7:  # Chụp trong 7 giây
-            ret, frame = self.camera.read()
-            if not ret or frame is None:
-                continue
-
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_frame)
-
-            if face_locations:
-                top, right, bottom, left = face_locations[0]
-                face_frames.append(frame[top:bottom, left:right])
-
-        if not face_frames:
-            print("Không tìm thấy khuôn mặt trong video")
-            return None
-
         os.makedirs("temp", exist_ok=True)
         video_path = "temp/captured_face_video.mp4"
 
         try:
-            height, width = face_frames[0].shape[:2]
+            # Lấy kích thước frame từ camera
+            ret, frame = self.camera.read()
+            if not ret or frame is None:
+                print("Không thể đọc frame từ camera")
+                return None
+
+            height, width = frame.shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(video_path, fourcc, 20.0, (width, height))
 
-            for frame in face_frames:
+            start_time = time.time()
+            face_detected = False
+
+            while time.time() - start_time < 5:  # Ghi video trong 5 giây
+                ret, frame = self.camera.read()
+                if not ret or frame is None:
+                    continue
+
+                # Chuyển đổi frame sang RGB để nhận diện khuôn mặt
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                face_locations = face_recognition.face_locations(rgb_frame)
+
+                if face_locations:
+                    face_detected = True
+                    # Vẽ khung xung quanh khuôn mặt
+                    top, right, bottom, left = face_locations[0]
+                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+
                 out.write(frame)
 
             out.release()
+
+            if not face_detected:
+                print("Không phát hiện được khuôn mặt trong video")
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                return None
+
             print(f"Đã lưu video thành công tại: {video_path}")
             return video_path
+
         except Exception as e:
-            print(f"Lỗi khi lưu video: {e}")
+            print(f"Lỗi khi ghi video: {e}")
+            if os.path.exists(video_path):
+                os.remove(video_path)
             return None
 
     def compare_faces(self, card_image_path, captured_video_path):
-        """So sánh khuôn mặt sử dụng GPU acceleration"""
+        """So sánh khuôn mặt từ video với ảnh trên CCCD"""
         try:
+            # Đọc và mã hóa khuôn mặt từ ảnh CCCD
             card_image = face_recognition.load_image_file(card_image_path)
             card_face_locations = face_recognition.face_locations(card_image)
 
             if not card_face_locations:
-                print("Không tìm thấy khuôn mặt trong ảnh thẻ")
+                print("Không tìm thấy khuôn mặt trong ảnh thẻ CCCD")
                 return False
 
-            card_face_encoding = face_recognition.face_encodings(
-                card_image, card_face_locations)[0]
+            card_face_encoding = face_recognition.face_encodings(card_image, card_face_locations)[0]
 
+            # Mở video đã ghi
             cap = cv2.VideoCapture(captured_video_path)
             if not cap.isOpened():
-                print("Không thể mở video")
+                print("Không thể mở video đã ghi")
                 return False
 
             similarities = []
+            frame_count = 0
+            processed_frames = 0
 
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
 
+                frame_count += 1
+                # Xử lý mỗi 5 frame để tăng hiệu suất
+                if frame_count % 5 != 0:
+                    continue
+
+                processed_frames += 1
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_locations = face_recognition.face_locations(rgb_frame)
 
                 if face_locations:
-                    face_encoding = face_recognition.face_encodings(
-                        rgb_frame, face_locations)[0]
-                    face_distance = face_recognition.face_distance(
-                        [card_face_encoding], face_encoding)[0]
+                    face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
+                    face_distance = face_recognition.face_distance([card_face_encoding], face_encoding)[0]
                     similarity = 1 - face_distance
                     similarities.append(similarity)
+                    print(f"Frame {frame_count}: Độ tương đồng = {similarity:.2%}")
 
             cap.release()
 
@@ -332,12 +353,25 @@ class MainApp:
                 print("Không tìm thấy khuôn mặt trong video")
                 return False
 
+            # Tính toán độ tương đồng trung bình và độ lệch chuẩn
             avg_similarity = sum(similarities) / len(similarities)
+            std_dev = np.std(similarities)
+            max_similarity = max(similarities)
+            min_similarity = min(similarities)
+
+            print(f"\nThống kê so sánh khuôn mặt:")
+            print(f"Số frame đã xử lý: {processed_frames}")
             print(f"Độ tương đồng trung bình: {avg_similarity:.2%}")
+            print(f"Độ tương đồng cao nhất: {max_similarity:.2%}")
+            print(f"Độ tương đồng thấp nhất: {min_similarity:.2%}")
+            print(f"Độ lệch chuẩn: {std_dev:.2%}")
 
-            SIMILARITY_THRESHOLD = 0.5
+            # Ngưỡng xác thực
+            SIMILARITY_THRESHOLD = 0.6
+            STD_DEV_THRESHOLD = 0.15
 
-            if avg_similarity >= SIMILARITY_THRESHOLD:
+            # Kiểm tra điều kiện xác thực
+            if avg_similarity >= SIMILARITY_THRESHOLD and std_dev <= STD_DEV_THRESHOLD:
                 print("Xác thực khuôn mặt thành công")
                 if os.path.exists(captured_video_path):
                     os.remove(captured_video_path)
