@@ -1,23 +1,27 @@
-import os
-import socketio
-import json
-import numpy as np
-import speech_recognition as sr
-import serial
-import time
-import pyaudio
-import wave
+
 import cv2
-import face_recognition
-from sentence_transformers import SentenceTransformer
-from utils.sound_util import speak
-from WinForm.giay_tam_tru import run_gtt
 import threading
+from WinForm.giay_tam_tru import run_gtt
+from utils.sound_util import speak
+from sentence_transformers import SentenceTransformer
+import face_recognition
+import wave
+import pyaudio
+import time
+import serial
+import speech_recognition as sr
+import numpy as np
+import json
+import socketio
+import os
+import pycuda.autoinit
+import pycuda.driver as cuda
+
+# ⚠️ Import gi sau tất cả các thư viện khác
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
-import nvidia.cuda as cuda
-import nvidia.cuda.runtime as cuda_runtime
+
 
 # Initialize GStreamer
 Gst.init(None)
@@ -26,6 +30,7 @@ MODEL_PATH = "trained_model"
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 card_service_socket = socketio.Client()
+
 
 class JetsonCamera:
     def __init__(self):
@@ -39,30 +44,30 @@ class JetsonCamera:
 
     def initialize_pipeline(self):
         try:
-            # Create GStreamer pipeline optimized for Jetson
+            # Dùng camera USB thông qua v4l2src
             pipeline_str = (
-                "nvarguscamerasrc ! "
-                "video/x-raw(memory:NVMM), width=1280, height=720, format=NV12, framerate=30/1 ! "
-                "nvvidconv ! "
-                "video/x-raw, format=BGRx ! "
-                "videoconvert ! "
-                "video/x-raw, format=BGR ! "
-                "appsink name=sink"
-            )
+		    "v4l2src device=/dev/video1 ! "
+		    "video/x-raw, width=640, height=480, framerate=30/1 ! "
+		    "videoconvert ! "
+		    "video/x-raw, format=BGR ! "
+		    "appsink name=sink emit-signals=true max-buffers=1 drop=true"
+		)
+
+
             self.pipeline = Gst.parse_launch(pipeline_str)
             self.sink = self.pipeline.get_by_name("sink")
             self.sink.set_property("emit-signals", True)
             self.sink.connect("new-sample", self.on_new_sample)
-            
+
             self.bus = self.pipeline.get_bus()
             self.bus.add_signal_watch()
             self.bus.connect("message", self.on_message)
-            
+
             self.pipeline.set_state(Gst.State.PLAYING)
             self.is_running = True
-            print("Đã khởi tạo camera Jetson thành công")
+            print("Đã khởi tạo camera USB thành công")
         except Exception as e:
-            print(f"Lỗi khởi tạo camera Jetson: {e}")
+            print(f"Lỗi khởi tạo camera USB: {e}")
             self.is_running = False
 
     def on_new_sample(self, sink):
@@ -74,7 +79,7 @@ class JetsonCamera:
                 structure = caps.get_structure(0)
                 width = structure.get_value("width")
                 height = structure.get_value("height")
-                
+
                 success, map_info = buffer.map(Gst.MapFlags.READ)
                 if success:
                     with self.lock:
@@ -108,6 +113,7 @@ class JetsonCamera:
             self.pipeline.set_state(Gst.State.NULL)
             self.is_running = False
 
+
 class MainApp:
     def __init__(self):
         # Khởi tạo CUDA
@@ -132,7 +138,8 @@ class MainApp:
         # Kết nối với server thẻ
         try:
             print("Đang kết nối đến server thẻ...")
-            card_service_socket.connect("http://192.168.5.1:8000", wait_timeout=10)
+            card_service_socket.connect(
+                "http://192.168.5.1:8000", wait_timeout=10)
             card_service_socket.on("/event", self.handle_card_event)
             print("Đã kết nối thành công đến server thẻ")
         except Exception as e:
@@ -151,17 +158,22 @@ class MainApp:
         # Load model
         try:
             self.model = SentenceTransformer(MODEL_PATH)
-            encoded_templates_path = os.path.join(MODEL_PATH, "encoded_templates.npy")
+            encoded_templates_path = os.path.join(
+                MODEL_PATH, "encoded_templates.npy")
             if os.path.exists(encoded_templates_path):
-                loaded_data = np.load(encoded_templates_path, allow_pickle=True).item()
-                self.encoded_templates = {k: np.array(v) for k, v in loaded_data.items()}
+                loaded_data = np.load(
+                    encoded_templates_path,
+                    allow_pickle=True).item()
+                self.encoded_templates = {
+                    k: np.array(v) for k, v in loaded_data.items()}
                 print("Đã tải encoded_templates thành công")
             else:
                 print(f"Không tìm thấy file {encoded_templates_path}")
                 self.encoded_templates = {}
         except Exception as e:
             print(f"Lỗi khi tải model hoặc encoded_templates: {e}")
-            self.model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+            self.model = SentenceTransformer(
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
             self.encoded_templates = {}
 
         # Khởi tạo audio
@@ -175,8 +187,8 @@ class MainApp:
             self.speech = None
 
         self.actions = [
-            "tra cứu bảo hiểm", "cấp lại bằng lái xe", 
-            "làm giấy tạm trú", "đăng ký hộ khẩu", 
+            "tra cứu bảo hiểm", "cấp lại bằng lái xe",
+            "làm giấy tạm trú", "đăng ký hộ khẩu",
             "cấp đổi căn cước công dân", "đăng ký kết hôn",
             "khai sinh cho trẻ em", "chứng thực giấy tờ"
         ]
@@ -187,29 +199,33 @@ class MainApp:
         if event_id == 2:  # Đọc thẻ thành công
             card_data = data.get("data", {})
             name = card_data.get("personName", "người dùng")
-            id_cccd = card_data.get("idCode","")
+            id_cccd = card_data.get("idCode", "")
             if (id_cccd):
                 speak(f"Xin chào, {name}!")
                 os.makedirs("temp", exist_ok=True)
                 with open("temp/card_data.json", "w", encoding="utf-8") as f:
                     json.dump(card_data, f, ensure_ascii=False, indent=4)
-                
+
                 if os.path.exists("temp/card_image.jpg"):
                     speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
                     captured_face_path = self.capture_face()
                     if captured_face_path:
-                        speak("Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
-                        matched = self.compare_faces("temp/card_image.jpg", captured_face_path)
+                        speak(
+                            "Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
+                        matched = self.compare_faces(
+                            "temp/card_image.jpg", captured_face_path)
                         if matched:
                             speak("Khuôn mặt xác thực thành công!")
                             self.is_authenticated = True
                             self.current_user = name
                         else:
-                            speak("Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
+                            speak(
+                                "Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
                             self.is_authenticated = False
                             self.current_user = None
                     else:
-                        speak("Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
+                        speak(
+                            "Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
                         self.is_authenticated = False
                         self.current_user = None
         elif event_id == 4:  # Nhận ảnh từ thẻ
@@ -230,10 +246,16 @@ class MainApp:
             print("Camera không khả dụng")
             return None
 
+        # Đếm ngược 3 giây
+        for i in range(3, 0, -1):
+            speak(f"{i}")
+            print(f"Bắt đầu sau {i}...")
+            time.sleep(0.5)
+
         speak("Vui lòng nhìn thẳng vào camera")
         face_frames = []
         start_time = time.time()
-        
+
         while time.time() - start_time < 7:  # Chụp trong 7 giây
             ret, frame = self.camera.read()
             if not ret or frame is None:
@@ -252,15 +274,15 @@ class MainApp:
 
         os.makedirs("temp", exist_ok=True)
         video_path = "temp/captured_face_video.mp4"
-        
+
         try:
             height, width = face_frames[0].shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(video_path, fourcc, 20.0, (width, height))
-            
+
             for frame in face_frames:
                 out.write(frame)
-            
+
             out.release()
             print(f"Đã lưu video thành công tại: {video_path}")
             return video_path
@@ -273,12 +295,13 @@ class MainApp:
         try:
             card_image = face_recognition.load_image_file(card_image_path)
             card_face_locations = face_recognition.face_locations(card_image)
-            
+
             if not card_face_locations:
                 print("Không tìm thấy khuôn mặt trong ảnh thẻ")
                 return False
 
-            card_face_encoding = face_recognition.face_encodings(card_image, card_face_locations)[0]
+            card_face_encoding = face_recognition.face_encodings(
+                card_image, card_face_locations)[0]
 
             cap = cv2.VideoCapture(captured_video_path)
             if not cap.isOpened():
@@ -286,7 +309,7 @@ class MainApp:
                 return False
 
             similarities = []
-            
+
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
@@ -294,10 +317,12 @@ class MainApp:
 
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_locations = face_recognition.face_locations(rgb_frame)
-                
+
                 if face_locations:
-                    face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
-                    face_distance = face_recognition.face_distance([card_face_encoding], face_encoding)[0]
+                    face_encoding = face_recognition.face_encodings(
+                        rgb_frame, face_locations)[0]
+                    face_distance = face_recognition.face_distance(
+                        [card_face_encoding], face_encoding)[0]
                     similarity = 1 - face_distance
                     similarities.append(similarity)
 
@@ -309,9 +334,9 @@ class MainApp:
 
             avg_similarity = sum(similarities) / len(similarities)
             print(f"Độ tương đồng trung bình: {avg_similarity:.2%}")
-            
+
             SIMILARITY_THRESHOLD = 0.5
-            
+
             if avg_similarity >= SIMILARITY_THRESHOLD:
                 print("Xác thực khuôn mặt thành công")
                 if os.path.exists(captured_video_path):
@@ -377,24 +402,26 @@ class MainApp:
                 self.speech.pause_threshold = 0.3
                 self.speech.phrase_threshold = 0.3
                 self.speech.non_speaking_duration = 0.3
-                
+
                 audio = self.speech.record(source)
                 try:
-                    text = self.speech.recognize_google(audio, language='vi-VN')
+                    text = self.speech.recognize_google(
+                        audio, language='vi-VN')
                     print(f"Bạn nói: {text}")
-                    
+
                     # Thực hiện dự đoán với ngưỡng tin cậy
                     best_match, confidence = self.predict_action(text)
-                    
+
                     # Ngưỡng độ tin cậy để quyết định có hỏi lại hay không
                     THRESHOLD = 0.4
                     if best_match:
                         # Thực hiện hành động ngay nếu có kết quả dự đoán
                         self.perform_action(best_match)
                     else:
-                        speak("Xin lỗi, tôi không hiểu yêu cầu của bạn. Vui lòng thử lại.")
+                        speak(
+                            "Xin lỗi, tôi không hiểu yêu cầu của bạn. Vui lòng thử lại.")
                         print("Mời bạn chọn dịch vụ")
-                    
+
                 except sr.UnknownValueError:
                     print("Không nghe rõ. Vui lòng nói lại")
                     speak("Không nghe rõ. Vui lòng nói lại")
@@ -415,7 +442,8 @@ class MainApp:
             if 'audio_file' in locals() and os.path.exists(audio_file):
                 try:
                     os.remove(audio_file)
-                    print(f"Đã xóa file âm thanh sau khi gặp lỗi: {audio_file}")
+                    print(
+                        f"Đã xóa file âm thanh sau khi gặp lỗi: {audio_file}")
                 except Exception as e:
                     print(f"Lỗi khi xóa file âm thanh: {e}")
 
@@ -440,38 +468,38 @@ class MainApp:
             os.makedirs("audio", exist_ok=True)
 
             stream = self.audio.open(format=FORMAT,
-                                   channels=CHANNELS,
-                                   rate=int(sample_rate),
-                                   input=True,
-                                   input_device_index=device_index,
-                                   frames_per_buffer=CHUNK)
+                                     channels=CHANNELS,
+                                     rate=int(sample_rate),
+                                     input=True,
+                                     input_device_index=device_index,
+                                     frames_per_buffer=CHUNK)
 
             print("Đang ghi âm...")
             frames = []
-            
+
             # Biến để theo dõi mức âm thanh
             max_amplitude = 0
             silence_threshold = 500
             silence_counter = 0
             is_speaking = False
-            
+
             # Ghi âm theo từng chunk
             for i in range(0, int(sample_rate / CHUNK * RECORD_SECONDS)):
                 try:
                     data = stream.read(CHUNK, exception_on_overflow=False)
                     frames.append(data)
-                    
+
                     # Tính toán mức âm thanh hiện tại
                     audio_data = np.frombuffer(data, dtype=np.int16)
                     current_amplitude = np.abs(audio_data).mean()
-                    
+
                     # Cập nhật biên độ lớn nhất
                     max_amplitude = max(max_amplitude, current_amplitude)
-                    
+
                     # Điều chỉnh ngưỡng im lặng dựa trên biên độ lớn nhất
                     if max_amplitude > 0:
                         silence_threshold = max_amplitude * 0.1
-                    
+
                     # Phát hiện giọng nói
                     if current_amplitude > silence_threshold:
                         is_speaking = True
@@ -480,7 +508,7 @@ class MainApp:
                         silence_counter += 1
                         if silence_counter > int(sample_rate / CHUNK * 1.0):
                             break
-                    
+
                 except Exception as e:
                     print(f"Lỗi khi đọc chunk {i}: {e}")
                     continue
@@ -492,7 +520,7 @@ class MainApp:
             # Tạo tên file với timestamp
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             temp_file = f"audio/recording_{timestamp}.wav"
-            
+
             # Lưu file với chất lượng cao
             wf = wave.open(temp_file, 'wb')
             wf.setnchannels(CHANNELS)
@@ -513,7 +541,8 @@ class MainApp:
             for i in range(self.audio.get_device_count()):
                 device_info = self.audio.get_device_info_by_index(i)
                 if 'USB' in device_info['name'] and device_info['maxInputChannels'] > 0:
-                    print(f"Tìm thấy thiết bị USB Audio: {device_info['name']}")
+                    print(
+                        f"Tìm thấy thiết bị USB Audio: {device_info['name']}")
                     return i, device_info['defaultSampleRate']
             print("Không tìm thấy thiết bị USB Audio, sử dụng thiết bị mặc định")
             default_device = self.audio.get_default_input_device_info()
@@ -530,7 +559,9 @@ class MainApp:
         best_action = None
 
         for action, embeddings in self.encoded_templates.items():
-            similarities = np.dot(embeddings, input_embedding) / (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(input_embedding))
+            similarities = np.dot(embeddings,
+                                  input_embedding) / (np.linalg.norm(embeddings,
+                                                                     axis=1) * np.linalg.norm(input_embedding))
             max_similarity = np.max(similarities)
 
             if max_similarity > best_score:
@@ -612,12 +643,13 @@ class MainApp:
         if hasattr(self, 'audio') and self.audio:
             self.audio.terminate()
 
+
 def run_app():
     app = MainApp()
     print("\nDanh sách dịch vụ có sẵn:")
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
-    
+
     while True:
         command = app.read_serial_command()
         if command:
@@ -628,5 +660,6 @@ def run_app():
                 break
         time.sleep(0.1)
 
+
 if __name__ == "__main__":
-    run_app() 
+    run_app()
