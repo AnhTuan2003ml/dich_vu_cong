@@ -33,83 +33,40 @@ card_service_socket = socketio.Client()
 
 class JetsonCamera:
     def __init__(self):
-        self.pipeline = None
-        self.sink = None
-        self.bus = None
+        self.camera = None
         self.is_running = False
-        self.frame = None
-        self.lock = threading.Lock()
-        self.initialize_pipeline()
+        self.initialize_camera()
 
-    def initialize_pipeline(self):
+    def initialize_camera(self):
+        """Khởi tạo camera đơn giản"""
         try:
-            # Dùng camera USB thông qua v4l2src
-            pipeline_str = (
-		    "v4l2src device=/dev/video1 ! "
-		    "video/x-raw, width=640, height=480, framerate=30/1 ! "
-		    "videoconvert ! "
-		    "video/x-raw, format=BGR ! "
-		    "appsink name=sink emit-signals=true max-buffers=1 drop=true"
-		)
-
-
-            self.pipeline = Gst.parse_launch(pipeline_str)
-            self.sink = self.pipeline.get_by_name("sink")
-            self.sink.set_property("emit-signals", True)
-            self.sink.connect("new-sample", self.on_new_sample)
-
-            self.bus = self.pipeline.get_bus()
-            self.bus.add_signal_watch()
-            self.bus.connect("message", self.on_message)
-
-            self.pipeline.set_state(Gst.State.PLAYING)
+            self.camera = cv2.VideoCapture(0)  # Mở camera mặc định
+            if not self.camera.isOpened():
+                raise Exception("Không thể mở camera")
+            
+            # Kiểm tra camera có hoạt động không
+            ret, frame = self.camera.read()
+            if not ret or frame is None:
+                raise Exception("Không thể đọc frame từ camera")
+            
             self.is_running = True
-            print("Đã khởi tạo camera USB thành công")
+            print("Đã khởi tạo camera thành công")
         except Exception as e:
-            print(f"Lỗi khởi tạo camera USB: {e}")
+            print(f"Lỗi khởi tạo camera: {e}")
             self.is_running = False
-
-    def on_new_sample(self, sink):
-        try:
-            sample = sink.emit("pull-sample")
-            if sample:
-                buffer = sample.get_buffer()
-                caps = sample.get_caps()
-                structure = caps.get_structure(0)
-                width = structure.get_value("width")
-                height = structure.get_value("height")
-
-                success, map_info = buffer.map(Gst.MapFlags.READ)
-                if success:
-                    with self.lock:
-                        self.frame = np.ndarray(
-                            shape=(height, width, 3),
-                            dtype=np.uint8,
-                            buffer=map_info.data
-                        ).copy()
-                    buffer.unmap(map_info)
-                return Gst.FlowReturn.OK
-        except Exception as e:
-            print(f"Lỗi trong on_new_sample: {e}")
-        return Gst.FlowReturn.ERROR
-
-    def on_message(self, bus, message):
-        t = message.type
-        if t == Gst.MessageType.ERROR:
-            self.is_running = False
-            err, debug = message.parse_error()
-            print(f"Lỗi: {err.message}")
-            print(f"Thông tin debug: {debug}")
 
     def read(self):
-        with self.lock:
-            if self.frame is not None:
-                return True, self.frame.copy()
-        return False, None
+        """Đọc frame từ camera"""
+        if not self.is_running or self.camera is None:
+            return False, None
+        
+        ret, frame = self.camera.read()
+        return ret, frame
 
     def release(self):
-        if self.pipeline:
-            self.pipeline.set_state(Gst.State.NULL)
+        """Giải phóng camera"""
+        if self.camera is not None:
+            self.camera.release()
             self.is_running = False
 
 
