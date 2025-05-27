@@ -216,8 +216,10 @@ class MainApp:
                                         self.serial_port.write(clear_ascii)
                                         self.serial_port.flush()
                                         
-                                        # Gửi thông tin mới
-                                        display_data = f"Ho va ten : {remove_accents(name)}\nCCCD: {id_cccd}"
+                                        # Gửi thông tin mới với căn chỉnh
+                                        name_padded = remove_accents(name)[:30]  # Giới hạn độ dài tên
+                                        id_padded = id_cccd[:30]  # Giới hạn độ dài CCCD
+                                        display_data = f"Ho va ten: {name_padded:<30}\nCCCD     : {id_padded:<30}"
                                         data_ascii = display_data.encode('ascii', 'ignore')
                                         header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
                                         vp = bytes([0x21, 0x00])
