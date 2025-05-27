@@ -396,19 +396,17 @@ class MainApp:
                 # Header cho màn hình với địa chỉ hiển thị 0x2003
                 header = bytes([0x5A, 0xA5, 0x20, 0x03])
                 
-                # Xử lý text với font ID
-                result_bytes = bytearray()
-                for char in text:
-                    # Kiểm tra nếu là ký tự ASCII
-                    if ord(char) < 128:
-                        result_bytes.extend(bytes([0x00, ord(char)]))  # Font ID 0x00 cho ASCII
-                    else:
-                        # Ký tự tiếng Việt - sử dụng font ID 0x02
-                        result_bytes.extend(bytes([0x02, ord(char)]))
+                # Loại bỏ dấu tiếng Việt
+                import unicodedata
+                text_no_accent = ''.join(c for c in unicodedata.normalize('NFD', text)
+                                       if unicodedata.category(c) != 'Mn')
+                
+                # Chuyển đổi sang ASCII
+                display_bytes = text_no_accent.encode('ascii', 'ignore')
                 
                 # Gửi dữ liệu
                 self.serial_port.write(header)
-                self.serial_port.write(result_bytes)
+                self.serial_port.write(display_bytes)
                 self.serial_port.write(b'\x00')  # Kết thúc chuỗi
                 print("Đã gửi text lên màn hình LCD")
             except Exception as e:
