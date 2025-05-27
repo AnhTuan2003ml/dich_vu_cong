@@ -187,7 +187,7 @@ class MainApp:
                 name = card_data.get("personName", "người dùng")
                 id_cccd = card_data.get("idCode", "")
                 if (id_cccd):
-                    speak(f"Xin chào, {name}!")
+                    speak(f"Xin chào công dân, {name}!")
                     os.makedirs("temp", exist_ok=True)
                     with open("temp/card_data.json", "w", encoding="utf-8") as f:
                         json.dump(card_data, f, ensure_ascii=False, indent=4)
@@ -206,21 +206,14 @@ class MainApp:
                                 # Gửi dữ liệu xác thực
                                 if self.serial_port and self.serial_port.is_open:
                                     try:
-                                        # Gửi họ tên thật đến VP 0x2100
-                                        name_ascii = remove_accents(name).encode('ascii', 'ignore')
-                                        header = bytes([0x5A, 0xA5, len(name_ascii), 0x82])
+                                        # Gửi cả họ tên và CCCD đến VP 0x2100
+                                        display_data = f"Ho va ten : {remove_accents(name)}\nCCCD: {id_cccd}"
+                                        data_ascii = display_data.encode('ascii', 'ignore')
+                                        header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
                                         vp = bytes([0x21, 0x00])
                                         self.serial_port.write(header)
                                         self.serial_port.write(vp)
-                                        self.serial_port.write(name_ascii)
-                                        
-                                        # Gửi CCCD đến VP 0x2500
-                                        id_ascii = id_cccd.encode('ascii', 'ignore')
-                                        header = bytes([0x5A, 0xA5, len(id_ascii), 0x82])
-                                        vp = bytes([0x25, 0x00])
-                                        self.serial_port.write(header)
-                                        self.serial_port.write(vp)
-                                        self.serial_port.write(id_ascii)
+                                        self.serial_port.write(data_ascii)
                                         
                                         self.serial_port.flush()
                                         print(f"Đã gửi dữ liệu xác thực lên màn hình UART")
@@ -250,13 +243,14 @@ class MainApp:
             print("Camera không khả dụng")
             return None
 
+        speak("Chuẩn bị xác thực khuôn mặt. Vui lòng nhìn thẳng vào camera")
         # Đếm ngược 3 giây
         for i in range(3, 0, -1):
             speak(f"{i}")
             print(f"Bắt đầu sau {i}...")
             time.sleep(0.5)
 
-        speak("Vui lòng nhìn thẳng vào camera")
+        speak("Bắt đầu")
         os.makedirs("temp", exist_ok=True)
         video_path = "temp/captured_face_video.mp4"
 
@@ -390,21 +384,14 @@ class MainApp:
                             # Gửi label khi thoát
                             if self.serial_port and self.serial_port.is_open:
                                 try:
-                                    # Gửi "Ho va Ten" đến VP 0x2100
-                                    header = bytes([0x5A, 0xA5, 0x08, 0x82])
+                                    # Gửi label đến VP 0x2100
+                                    label_data = "Ho va ten : Ho ten\nCCCD: id_cccd"
+                                    label_ascii = label_data.encode('ascii')
+                                    header = bytes([0x5A, 0xA5, len(label_ascii), 0x82])
                                     vp = bytes([0x21, 0x00])
-                                    label_name = "Ho va Ten".encode('ascii')
                                     self.serial_port.write(header)
                                     self.serial_port.write(vp)
-                                    self.serial_port.write(label_name)
-                                    
-                                    # Gửi "CCCD" đến VP 0x2500
-                                    header = bytes([0x5A, 0xA5, 0x04, 0x82])
-                                    vp = bytes([0x25, 0x00])
-                                    label_id = "CCCD".encode('ascii')
-                                    self.serial_port.write(header)
-                                    self.serial_port.write(vp)
-                                    self.serial_port.write(label_id)
+                                    self.serial_port.write(label_ascii)
                                     
                                     self.serial_port.flush()
                                     print("Đã gửi label lên màn hình UART khi thoát")
