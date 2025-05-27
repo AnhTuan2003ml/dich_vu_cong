@@ -195,18 +195,29 @@ class MainApp:
                     # Gửi dữ liệu thẻ lên màn hình UART
                     if self.serial_port and self.serial_port.is_open:
                         try:
-                            # Header cho màn hình
-                            header = bytes([0x5A, 0xA5, 0x20, 0x03])  # 0x1000 là địa chỉ hiển thị
+                            # Gửi họ tên đến VP 0x2100
+                            header_name = bytes([0x5A, 0xA5, 0x21, 0x00])
+                            name_data = f"Họ và Tên: {name}"
+                            name_bytes = name_data.encode('gbk')
                             
-                            # Format dữ liệu thẻ
-                            display_data = f"Ho va Ten: {remove_accents(name)}\nCCCD: {id_cccd}"
-                            display_bytes = display_data.encode('ascii','ignore')
+                            self.serial_port.write(header_name)
+                            self.serial_port.write(bytes([0x02]))  # Mã hóa GBK
+                            self.serial_port.write(name_bytes)
+                            self.serial_port.write(b'\x00')
                             
-                            # Gửi dữ liệu
-                            self.serial_port.write(header)
-                            self.serial_port.write(display_bytes)
-                            self.serial_port.write(b'\x00')  # Kết thúc chuỗi
-                            print("Đã gửi dữ liệu thẻ lên màn hình UART")
+                            # Gửi CCCD đến VP 0x2101
+                            header_id = bytes([0x5A, 0xA5, 0x21, 0x01])
+                            id_data = f"CCCD: {id_cccd}"
+                            id_bytes = id_data.encode('gbk')
+                            
+                            self.serial_port.write(header_id)
+                            self.serial_port.write(bytes([0x02]))  # Mã hóa GBK
+                            self.serial_port.write(id_bytes)
+                            self.serial_port.write(b'\x00')
+                            
+                            # Đảm bảo dữ liệu được gửi đi
+                            self.serial_port.flush()
+                            print(f"Đã gửi dữ liệu thẻ lên màn hình UART:\n{name_data}\n{id_data}")
                         except Exception as e:
                             print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
 
