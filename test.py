@@ -221,14 +221,15 @@ class MainApp:
                                         name_padded = remove_accents(name)[:30]  # Giới hạn độ dài tên
                                         id_padded = str(id_cccd)[:30]  # Chuyển đổi sang string và giới hạn độ dài
                                         print(f"Debug - Display - Name: {name_padded}, ID: {id_padded}")  # Debug log
-                                        display_data = f"Ho va ten: {name_padded:<30}\nCCCD     : {id_padded:<30}"
+                                        
+                                        # Gửi cả hai dòng trong một lệnh
+                                        display_data = f"Ho va ten: {name_padded:<30}\r\nCCCD     : {id_padded:<30}"
                                         data_ascii = display_data.encode('ascii', 'ignore')
                                         header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
                                         vp = bytes([0x21, 0x00])
                                         self.serial_port.write(header)
                                         self.serial_port.write(vp)
                                         self.serial_port.write(data_ascii)
-                                        
                                         self.serial_port.flush()
                                         print(f"Đã gửi dữ liệu xác thực lên màn hình UART")
                                     except Exception as e:
