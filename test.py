@@ -361,10 +361,15 @@ class MainApp:
                             return "CHOOSE_SERVICE"
                         elif code == 0x02:
                             speak("Xin chào, hẹn gặp lại")
-                            self.clear_cccd_info()
-                            return "GOODBYE"
+                        elif code == 0x04:
+                            speak("Đã hoàn tất dịch vụ, đang in ra.")
                         elif code == 0x03:
                             return "START_LISTENING"
+                        elif code == 0x00:
+                        	speak("Bạn đã chọn dịch vụ làm giấy tạm trú.")
+                        	if not self.is_authenticated:
+                                 speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
+                                 return
                     # Nếu không phải hex, xử lý như text thông thường
                     command = data.decode('utf-8').strip()
                     return command
@@ -577,7 +582,7 @@ class MainApp:
                 run()
                 speak("Bản in đang được tạo. Vui lòng chờ...")
             elif command == "làm giấy tạm trú":
-                speak("Bạn điền thông tin vào phiếu khai sau. Sau đó mang đến quầy số 6")
+                speak("Hệ thống đang in mẫu giấy tạm trú. Quý khách vui lòng điền vào biểu mẫu sau. Sau đó mang đến quầy số 6")
                 run_gtt()
                 speak("Bản in đang được tạo. Vui lòng chờ...")
             elif command == "đăng ký hộ khẩu":
