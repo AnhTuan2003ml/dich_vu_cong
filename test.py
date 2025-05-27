@@ -223,7 +223,7 @@ class MainApp:
                                         print(f"Debug - Display - Name: {name_padded}, ID: {id_padded}")  # Debug log
                                         
                                         # Gửi cả hai dòng trong một lệnh
-                                        display_data = f"Ho va ten: {name_padded:<30}\r\nCCCD     : {id_padded:<30}"
+                                        display_data = f"{name_padded:<30}\r\n{id_padded:<30}"
                                         data_ascii = display_data.encode('ascii', 'ignore')
                                         header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
                                         vp = bytes([0x21, 0x00])
