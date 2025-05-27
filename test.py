@@ -186,6 +186,7 @@ class MainApp:
                 card_data = data.get("data", {})
                 name = card_data.get("personName", "người dùng")
                 id_cccd = card_data.get("idCode", "")
+                print(f"Debug - Name: {name}, ID: {id_cccd}")  # Debug log
                 if (id_cccd):
                     speak(f"Xin chào công dân, {name}!")
                     os.makedirs("temp", exist_ok=True)
@@ -218,7 +219,8 @@ class MainApp:
                                         
                                         # Gửi thông tin mới với căn chỉnh
                                         name_padded = remove_accents(name)[:30]  # Giới hạn độ dài tên
-                                        id_padded = id_cccd[:30]  # Giới hạn độ dài CCCD
+                                        id_padded = str(id_cccd)[:30]  # Chuyển đổi sang string và giới hạn độ dài
+                                        print(f"Debug - Display - Name: {name_padded}, ID: {id_padded}")  # Debug log
                                         display_data = f"Ho va ten: {name_padded:<30}\nCCCD     : {id_padded:<30}"
                                         data_ascii = display_data.encode('ascii', 'ignore')
                                         header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
