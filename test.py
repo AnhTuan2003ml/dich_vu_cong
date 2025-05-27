@@ -96,6 +96,11 @@ class MainApp:
         except Exception as e:
             print(f"Lỗi khởi tạo CUDA: {e}")
 
+        # Thêm biến để kiểm soát thread
+        self.is_reading_card = False
+        self.bard_thread = None
+        self.stop_bard_thread = False
+
         # Khởi tạo kết nối serial
         try:
             self.serial_port = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -168,51 +173,50 @@ class MainApp:
 
     def handle_card_event(self, data):
         """Xử lý sự kiện từ thẻ"""
-        
-        event_id = data.get("id")
-        if event_id == 2:  # Đọc thẻ thành công
-            card_data = data.get("data", {})
-            name = card_data.get("personName", "người dùng")
-            id_cccd = card_data.get("idCode", "")
-            if (id_cccd):
-                speak(f"Xin chào, {name}!")
-                os.makedirs("temp", exist_ok=True)
-                with open("temp/card_data.json", "w", encoding="utf-8") as f:
-                    json.dump(card_data, f, ensure_ascii=False, indent=4)
+        self.is_reading_card = True
+        try:
+            event_id = data.get("id")
+            if event_id == 2:  # Đọc thẻ thành công
+                card_data = data.get("data", {})
+                name = card_data.get("personName", "người dùng")
+                id_cccd = card_data.get("idCode", "")
+                if (id_cccd):
+                    speak(f"Xin chào, {name}!")
+                    os.makedirs("temp", exist_ok=True)
+                    with open("temp/card_data.json", "w", encoding="utf-8") as f:
+                        json.dump(card_data, f, ensure_ascii=False, indent=4)
 
-                if os.path.exists("temp/card_image.jpg"):
-                    speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
-                    captured_face_path = self.capture_face()
-                    if captured_face_path:
-                        speak(
-                            "Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
-                        matched = self.compare_faces(
-                            "temp/card_image.jpg", captured_face_path)
-                        if matched:
-                            speak("Khuôn mặt xác thực thành công!")
-                            self.is_authenticated = True
-                            self.current_user = name
+                    if os.path.exists("temp/card_image.jpg"):
+                        speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
+                        captured_face_path = self.capture_face()
+                        if captured_face_path:
+                            speak("Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
+                            matched = self.compare_faces("temp/card_image.jpg", captured_face_path)
+                            if matched:
+                                speak("Khuôn mặt xác thực thành công!")
+                                self.is_authenticated = True
+                                self.current_user = name
+                            else:
+                                speak("Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
+                                self.is_authenticated = False
+                                self.current_user = None
                         else:
-                            speak(
-                                "Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
+                            speak("Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
                             self.is_authenticated = False
                             self.current_user = None
-                    else:
-                        speak(
-                            "Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
-                        self.is_authenticated = False
-                        self.current_user = None
-        elif event_id == 4:  # Nhận ảnh từ thẻ
-            img_data = data.get("data", {}).get("img_data")
-            if img_data:
-                os.makedirs("temp", exist_ok=True)
-                with open("temp/card_image.jpg", "wb") as img_file:
-                    if isinstance(img_data, str):
-                        import base64
-                        img_file.write(base64.b64decode(img_data))
-                    elif isinstance(img_data, bytes):
-                        img_file.write(img_data)
-                print("Đã lưu ảnh từ thẻ CCCD")
+            elif event_id == 4:  # Nhận ảnh từ thẻ
+                img_data = data.get("data", {}).get("img_data")
+                if img_data:
+                    os.makedirs("temp", exist_ok=True)
+                    with open("temp/card_image.jpg", "wb") as img_file:
+                        if isinstance(img_data, str):
+                            import base64
+                            img_file.write(base64.b64decode(img_data))
+                        elif isinstance(img_data, bytes):
+                            img_file.write(img_data)
+                    print("Đã lưu ảnh từ thẻ CCCD")
+        finally:
+            self.is_reading_card = False
 
     def capture_face(self):
         """Chụp video khuôn mặt sử dụng camera USB"""
@@ -614,6 +618,9 @@ class MainApp:
 
     def exit_app(self):
         """Thoát ứng dụng"""
+        self.stop_bard_thread = True
+        if self.bard_thread:
+            self.bard_thread.join()
         speak("Rất vui được phục vụ bạn, hẹn gặp lại!")
         file_path = "greeting.mp3"
         if os.path.exists(file_path):
@@ -633,22 +640,26 @@ class MainApp:
 
     def read_bard_code(self):
         """Đọc mã Bard từ file event"""
-        try:
-            event_path = "DEV/INPUT/EVENT3"
-            if os.path.exists(event_path):
-                with open(event_path, 'r', encoding='utf-8') as f:
-                    code = f.read().strip()
-                    if code:
-                        # Xử lý đọc từng ký tự của mã
-                        code_text = " ".join(code)
-                        speak(f"Mã của bạn là: {code_text}")
-                        # Xóa nội dung file sau khi đọc
-                        open(event_path, 'w', encoding='utf-8').close()
-                        return True
-            return False
-        except Exception as e:
-            print(f"Lỗi khi đọc mã: {e}")
-            return False
+        while not self.stop_bard_thread:
+            try:
+                if self.is_reading_card:
+                    time.sleep(0.1)
+                    continue
+
+                event_path = "DEV/INPUT/EVENT3"
+                if os.path.exists(event_path):
+                    with open(event_path, 'r', encoding='utf-8') as f:
+                        code = f.read().strip()
+                        if code:
+                            # Xử lý đọc từng ký tự của mã
+                            code_text = " ".join(code)
+                            speak(f"Mã của bạn là: {code_text}")
+                            # Xóa nội dung file sau khi đọc
+                            open(event_path, 'w', encoding='utf-8').close()
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"Lỗi khi đọc mã: {e}")
+                time.sleep(0.1)
 
 
 def run_app():
@@ -657,11 +668,12 @@ def run_app():
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
 
-    while True:
-        # Kiểm tra mã trước
-        if app.read_bard_code():
-            continue
+    # Khởi động thread đọc Bard code
+    app.bard_thread = threading.Thread(target=app.read_bard_code)
+    app.bard_thread.daemon = True
+    app.bard_thread.start()
 
+    while True:
         command = app.read_serial_command()
         if command:
             if command == "START_LISTENING":
