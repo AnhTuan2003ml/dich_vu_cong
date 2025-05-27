@@ -103,8 +103,13 @@ class MainApp:
 
         # Thêm trạng thái đọc QR
         self.is_reading_qr = False
-        self.auto_scan_qr = True  # Thêm biến để kiểm soát tự động quét QR
+        self.auto_scan_qr = True  # Biến kiểm soát tự động quét QR
         self.qr_scan_thread = None  # Thread cho việc quét QR
+        self.last_qr_data = None
+        self.consecutive_matches = 0
+        self.required_matches = 3
+        self.last_speak_time = 0
+        self.speak_cooldown = 5  # Thời gian chờ giữa các lần đọc (giây)
 
         # Kết nối với server thẻ
         try:
@@ -167,9 +172,11 @@ class MainApp:
 
     def handle_card_event(self, data):
         """Xử lý sự kiện từ thẻ"""
-        
         event_id = data.get("id")
         if event_id == 2:  # Đọc thẻ thành công
+            # Dừng quét QR khi bắt đầu xử lý thẻ
+            self.stop_auto_qr_scan()
+            
             card_data = data.get("data", {})
             name = card_data.get("personName", "người dùng")
             id_cccd = card_data.get("idCode", "")
@@ -183,24 +190,24 @@ class MainApp:
                     speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
                     captured_face_path = self.capture_face()
                     if captured_face_path:
-                        speak(
-                            "Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
-                        matched = self.compare_faces(
-                            "temp/card_image.jpg", captured_face_path)
+                        speak("Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
+                        matched = self.compare_faces("temp/card_image.jpg", captured_face_path)
                         if matched:
                             speak("Khuôn mặt xác thực thành công!")
                             self.is_authenticated = True
                             self.current_user = name
                         else:
-                            speak(
-                                "Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
+                            speak("Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
                             self.is_authenticated = False
                             self.current_user = None
+                            # Tiếp tục quét QR khi xác thực thất bại
+                            self.start_auto_qr_scan()
                     else:
-                        speak(
-                            "Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
+                        speak("Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
                         self.is_authenticated = False
                         self.current_user = None
+                        # Tiếp tục quét QR khi không chụp được ảnh
+                        self.start_auto_qr_scan()
         elif event_id == 4:  # Nhận ảnh từ thẻ
             img_data = data.get("data", {}).get("img_data")
             if img_data:
@@ -654,41 +661,10 @@ class MainApp:
         except Exception as e:
             print(f"Lỗi khi thực hiện hành động: {e}")
 
-    def clear_cccd_info(self):
-        """Xóa thông tin CCCD và reset trạng thái xác thực"""
-        if os.path.exists("temp/card_image.jpg"):
-            try:
-                os.remove("temp/card_image.jpg")
-                print("Đã xóa ảnh thẻ CCCD")
-            except Exception as e:
-                print(f"Lỗi khi xóa ảnh thẻ: {e}")
-
-        if os.path.exists("temp/card_data.json"):
-            try:
-                os.remove("temp/card_data.json")
-                print("Đã xóa dữ liệu thẻ CCCD")
-            except Exception as e:
-                print(f"Lỗi khi xóa dữ liệu thẻ: {e}")
-
-        self.is_authenticated = False
-        self.current_user = None
-        print("Đã reset trạng thái xác thực")
-
-    def exit_app(self):
-        """Thoát ứng dụng"""
-        speak("Rất vui được phục vụ bạn, hẹn gặp lại!")
-        file_path = "greeting.mp3"
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
-        self.is_authenticated = False
-        self.current_user = None
-        print("Tạm biệt!")
-
     def start_auto_qr_scan(self):
         """Bắt đầu tự động quét QR trong một thread riêng"""
         if self.qr_scan_thread is None or not self.qr_scan_thread.is_alive():
+            self.auto_scan_qr = True
             self.qr_scan_thread = threading.Thread(target=self.auto_scan_qr_loop)
             self.qr_scan_thread.daemon = True
             self.qr_scan_thread.start()
@@ -696,12 +672,6 @@ class MainApp:
 
     def auto_scan_qr_loop(self):
         """Vòng lặp tự động quét QR"""
-        last_qr_data = None
-        consecutive_matches = 0
-        required_matches = 3
-        last_speak_time = 0
-        speak_cooldown = 5  # Thời gian chờ giữa các lần đọc (giây)
-
         while self.auto_scan_qr:
             try:
                 if not self.camera.is_running:
@@ -723,19 +693,19 @@ class MainApp:
                     qr_data = obj.data.decode('utf-8')
                     
                     # Kiểm tra nếu dữ liệu giống với lần đọc trước
-                    if qr_data == last_qr_data:
-                        consecutive_matches += 1
-                        if consecutive_matches >= required_matches:
+                    if qr_data == self.last_qr_data:
+                        self.consecutive_matches += 1
+                        if self.consecutive_matches >= self.required_matches:
                             current_time = time.time()
                             # Chỉ đọc nếu đã qua thời gian chờ
-                            if current_time - last_speak_time >= speak_cooldown:
+                            if current_time - self.last_speak_time >= self.speak_cooldown:
                                 speak(f"Nội dung mã QR là: {qr_data}")
                                 print(f"Đã đọc mã QR: {qr_data}")
-                                last_speak_time = current_time
-                            consecutive_matches = 0
+                                self.last_speak_time = current_time
+                            self.consecutive_matches = 0
                     else:
-                        consecutive_matches = 1
-                        last_qr_data = qr_data
+                        self.consecutive_matches = 1
+                        self.last_qr_data = qr_data
 
             except Exception as e:
                 print(f"Lỗi khi tự động quét QR: {e}")
@@ -749,6 +719,40 @@ class MainApp:
         if self.qr_scan_thread and self.qr_scan_thread.is_alive():
             self.qr_scan_thread.join(timeout=1)
         print("Đã dừng tự động quét QR")
+
+    def clear_cccd_info(self):
+        """Xóa thông tin CCCD và reset trạng thái xác thực"""
+        if os.path.exists("temp/card_image.jpg"):
+            try:
+                os.remove("temp/card_image.jpg")
+                print("Đã xóa ảnh thẻ CCCD")
+            except Exception as e:
+                print(f"Lỗi khi xóa ảnh thẻ: {e}")
+
+        if os.path.exists("temp/card_data.json"):
+            try:
+                os.remove("temp/card_data.json")
+                print("Đã xóa dữ liệu thẻ CCCD")
+            except Exception as e:
+                print(f"Lỗi khi xóa dữ liệu thẻ: {e}")
+
+        self.is_authenticated = False
+        self.current_user = None
+        print("Đã reset trạng thái xác thực")
+        # Tiếp tục quét QR sau khi xóa thông tin thẻ
+        self.start_auto_qr_scan()
+
+    def exit_app(self):
+        """Thoát ứng dụng"""
+        speak("Rất vui được phục vụ bạn, hẹn gặp lại!")
+        file_path = "greeting.mp3"
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+        self.is_authenticated = False
+        self.current_user = None
+        print("Tạm biệt!")
 
     def __del__(self):
         """Dọn dẹp khi đóng chương trình"""
@@ -765,7 +769,7 @@ def run_app():
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
 
-    # Bắt đầu tự động quét QR
+    # Bắt đầu tự động quét QR khi khởi động
     app.start_auto_qr_scan()
 
     while True:
@@ -774,10 +778,8 @@ def run_app():
             if command == "START_LISTENING":
                 app.start_listening()
             elif command == "READ_QR":
-                # Tạm dừng tự động quét để thực hiện quét thủ công
                 app.stop_auto_qr_scan()
                 app.read_qr_code()
-                # Tiếp tục tự động quét sau khi hoàn thành
                 app.start_auto_qr_scan()
             elif command == "EXIT":
                 app.stop_auto_qr_scan()
