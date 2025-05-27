@@ -349,6 +349,10 @@ class MainApp:
         speak("Đang bắt đầu đọc mã QR. Vui lòng đưa mã QR vào trước camera")
 
         try:
+            last_qr_data = None
+            consecutive_matches = 0
+            required_matches = 3  # Số lần đọc giống nhau liên tiếp để xác nhận
+
             while self.is_reading_qr:
                 ret, frame = self.camera.read()
                 if not ret or frame is None:
@@ -367,13 +371,20 @@ class MainApp:
                     # Lấy dữ liệu từ mã QR
                     qr_data = obj.data.decode('utf-8')
                     
-                    # Đọc nội dung mã QR
-                    speak(f"Nội dung mã QR là: {qr_data}")
-                    print(f"Đã đọc mã QR: {qr_data}")
-                    
-                    # Dừng đọc sau khi đã tìm thấy và đọc xong
-                    self.is_reading_qr = False
-                    break
+                    # Kiểm tra nếu dữ liệu giống với lần đọc trước
+                    if qr_data == last_qr_data:
+                        consecutive_matches += 1
+                        if consecutive_matches >= required_matches:
+                            # Đọc nội dung mã QR
+                            speak(f"Nội dung mã QR là: {qr_data}")
+                            print(f"Đã đọc mã QR: {qr_data}")
+                            
+                            # Dừng đọc sau khi đã tìm thấy và đọc xong
+                            self.is_reading_qr = False
+                            break
+                    else:
+                        consecutive_matches = 1
+                        last_qr_data = qr_data
 
                 # Thoát nếu nhấn 'q'
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -605,11 +616,15 @@ class MainApp:
 
     def perform_action(self, command):
         """Thực hiện hành động dựa trên lệnh"""
-        if not self.is_authenticated:
-            speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
-            return
-
         try:
+            if command == "đọc mã QR":
+                self.read_qr_code()
+                return
+
+            if not self.is_authenticated:
+                speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
+                return
+
             if command == "tra cứu bảo hiểm":
                 speak("Bạn muốn tra cứu bảo hiểm gì?")
             elif command == "cấp lại bằng lái xe":
@@ -631,8 +646,6 @@ class MainApp:
                 speak("Tôi sẽ hướng dẫn bạn làm giấy khai sinh cho trẻ em!")
             elif command == "chứng thực giấy tờ":
                 speak("Tôi sẽ giúp bạn chứng thực giấy tờ!")
-            elif command == "đọc mã QR":
-                self.read_qr_code()
             else:
                 speak("Xin lỗi, tôi không hiểu yêu cầu của bạn. Vui lòng thử lại.")
                 print("Mời bạn chọn dịch vụ")
