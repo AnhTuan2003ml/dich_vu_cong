@@ -207,19 +207,13 @@ class MainApp:
                                 if self.serial_port and self.serial_port.is_open:
                                     try:
                                         # Gửi cả họ tên và CCCD đến VP 0x2100
-                                        # Định dạng text với độ dài cố định cho mỗi dòng
-                                        name_line = f"Ho va ten : {remove_accents(name):<20}"  # Căn trái với độ dài 20
-                                        cccd_line = f"CCCD: {id_cccd:<20}"  # Căn trái với độ dài 20
-                                        display_data = f"{name_line}\n{cccd_line}"
-                                        # Chuyển đổi mỗi ký tự thành 4 ký tự hex
-                                        hex_data = ''.join([f"{ord(c):04x}" for c in display_data])
-                                        # Tạo header và VP
-                                        header = bytes([0x5A, 0xA5, len(hex_data)//2, 0x82])  # Chia 2 vì mỗi ký tự hex là 2 byte
+                                        display_data = f"Ho va ten : {remove_accents(name)}\nCCCD: {id_cccd}"
+                                        data_ascii = display_data.encode('ascii', 'ignore')
+                                        header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
                                         vp = bytes([0x21, 0x00])
-                                        # Gửi dữ liệu
                                         self.serial_port.write(header)
                                         self.serial_port.write(vp)
-                                        self.serial_port.write(bytes.fromhex(hex_data))
+                                        self.serial_port.write(data_ascii)
                                         
                                         self.serial_port.flush()
                                         print(f"Đã gửi dữ liệu xác thực lên màn hình UART")
@@ -391,19 +385,13 @@ class MainApp:
                             if self.serial_port and self.serial_port.is_open:
                                 try:
                                     # Gửi thông tin trống đến VP 0x2100
-                                    # Định dạng text với độ dài cố định cho mỗi dòng
-                                    name_line = "Ho va ten : " + " " * 20  # Thêm 20 khoảng trắng
-                                    cccd_line = "CCCD: " + " " * 20  # Thêm 20 khoảng trắng
-                                    empty_data = f"{name_line}\n{cccd_line}"
-                                    # Chuyển đổi mỗi ký tự thành 4 ký tự hex
-                                    hex_data = ''.join([f"{ord(c):04x}" for c in empty_data])
-                                    # Tạo header và VP
-                                    header = bytes([0x5A, 0xA5, len(hex_data)//2, 0x82])  # Chia 2 vì mỗi ký tự hex là 2 byte
+                                    empty_data = "Ho va ten : \nCCCD: "
+                                    empty_ascii = empty_data.encode('ascii')
+                                    header = bytes([0x5A, 0xA5, len(empty_ascii), 0x82])
                                     vp = bytes([0x21, 0x00])
-                                    # Gửi dữ liệu
                                     self.serial_port.write(header)
                                     self.serial_port.write(vp)
-                                    self.serial_port.write(bytes.fromhex(hex_data))
+                                    self.serial_port.write(empty_ascii)
                                     
                                     self.serial_port.flush()
                                     print("Đã gửi thông tin trống lên màn hình UART khi thoát")
