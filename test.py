@@ -103,6 +103,8 @@ class MainApp:
 
         # Thêm trạng thái đọc QR
         self.is_reading_qr = False
+        self.auto_scan_qr = True  # Thêm biến để kiểm soát tự động quét QR
+        self.qr_scan_thread = None  # Thread cho việc quét QR
 
         # Kết nối với server thẻ
         try:
@@ -684,8 +686,73 @@ class MainApp:
         self.current_user = None
         print("Tạm biệt!")
 
+    def start_auto_qr_scan(self):
+        """Bắt đầu tự động quét QR trong một thread riêng"""
+        if self.qr_scan_thread is None or not self.qr_scan_thread.is_alive():
+            self.qr_scan_thread = threading.Thread(target=self.auto_scan_qr_loop)
+            self.qr_scan_thread.daemon = True
+            self.qr_scan_thread.start()
+            print("Đã bắt đầu tự động quét QR")
+
+    def auto_scan_qr_loop(self):
+        """Vòng lặp tự động quét QR"""
+        last_qr_data = None
+        consecutive_matches = 0
+        required_matches = 3
+        last_speak_time = 0
+        speak_cooldown = 5  # Thời gian chờ giữa các lần đọc (giây)
+
+        while self.auto_scan_qr:
+            try:
+                if not self.camera.is_running:
+                    time.sleep(1)
+                    continue
+
+                ret, frame = self.camera.read()
+                if not ret or frame is None:
+                    continue
+
+                # Chuyển đổi frame sang grayscale
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.equalizeHist(gray)
+
+                # Tìm và giải mã mã QR
+                decoded_objects = decode(gray)
+                
+                for obj in decoded_objects:
+                    qr_data = obj.data.decode('utf-8')
+                    
+                    # Kiểm tra nếu dữ liệu giống với lần đọc trước
+                    if qr_data == last_qr_data:
+                        consecutive_matches += 1
+                        if consecutive_matches >= required_matches:
+                            current_time = time.time()
+                            # Chỉ đọc nếu đã qua thời gian chờ
+                            if current_time - last_speak_time >= speak_cooldown:
+                                speak(f"Nội dung mã QR là: {qr_data}")
+                                print(f"Đã đọc mã QR: {qr_data}")
+                                last_speak_time = current_time
+                            consecutive_matches = 0
+                    else:
+                        consecutive_matches = 1
+                        last_qr_data = qr_data
+
+            except Exception as e:
+                print(f"Lỗi khi tự động quét QR: {e}")
+                time.sleep(1)
+
+            time.sleep(0.1)  # Giảm tải CPU
+
+    def stop_auto_qr_scan(self):
+        """Dừng tự động quét QR"""
+        self.auto_scan_qr = False
+        if self.qr_scan_thread and self.qr_scan_thread.is_alive():
+            self.qr_scan_thread.join(timeout=1)
+        print("Đã dừng tự động quét QR")
+
     def __del__(self):
         """Dọn dẹp khi đóng chương trình"""
+        self.stop_auto_qr_scan()
         if hasattr(self, 'camera'):
             self.camera.release()
         if hasattr(self, 'audio') and self.audio:
@@ -698,14 +765,22 @@ def run_app():
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
 
+    # Bắt đầu tự động quét QR
+    app.start_auto_qr_scan()
+
     while True:
         command = app.read_serial_command()
         if command:
             if command == "START_LISTENING":
                 app.start_listening()
             elif command == "READ_QR":
+                # Tạm dừng tự động quét để thực hiện quét thủ công
+                app.stop_auto_qr_scan()
                 app.read_qr_code()
+                # Tiếp tục tự động quét sau khi hoàn thành
+                app.start_auto_qr_scan()
             elif command == "EXIT":
+                app.stop_auto_qr_scan()
                 app.exit_app()
                 break
         time.sleep(0.1)
