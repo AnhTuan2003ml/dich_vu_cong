@@ -195,18 +195,20 @@ class MainApp:
                     # Gửi dữ liệu thẻ lên màn hình UART
                     if self.serial_port and self.serial_port.is_open:
                         try:
-                            # Gửi họ tên đến VP 0x2100
-                            vp_name = 0x2100
-                            name_data = f"Ho va Ten: {remove_accents(name)}\nCCCD: {id_cccd}\n"
-                            name_bytes = name_data.encode('gbk')
+                            # Chuyển dữ liệu thành ASCII
+                            name_ascii = remove_accents(name).encode('ascii', 'ignore')
+                            id_ascii = id_cccd.encode('ascii', 'ignore')
                             
-                            # Gửi địa chỉ VP và dữ liệu
-                            self.serial_port.write(vp_name.to_bytes(2, byteorder='big'))
-                            self.serial_port.write(name_bytes)
+                            # Tạo chuỗi hex
+                            hex_data = f"0x{name_ascii.hex()}{id_ascii.hex()}"
                             
+                            # Gửi địa chỉ VP và dữ liệu hex
+                            vp_address = 0x2100
+                            self.serial_port.write(vp_address.to_bytes(2, byteorder='big'))
+                            self.serial_port.write(hex_data.encode('ascii'))
                             
                             self.serial_port.flush()
-                            print(f"Đã gửi dữ liệu thẻ lên màn hình UART:\n{name_data}\n")
+                            print(f"Đã gửi dữ liệu hex lên màn hình UART: {hex_data}")
                         except Exception as e:
                             print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
 
