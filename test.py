@@ -618,17 +618,33 @@ class MainApp:
 
     def read_input(self):
         """Đọc input từ người dùng"""
+        print("Sẵn sàng đọc mã...")
         while not self.stop_threads:
             try:
                 if self.is_reading_card:
                     time.sleep(0.1)
                     continue
 
-                code = input().strip()
-                if code:
-                    # Xử lý đọc từng ký tự của mã
-                    code_text = " ".join(code)
-                    speak(f"Mã của bạn là: {code_text}")
+                # Đọc input không chờ enter
+                import sys
+                import termios
+                import tty
+                
+                # Lưu cài đặt terminal hiện tại
+                old_settings = termios.tcgetattr(sys.stdin)
+                try:
+                    # Đặt terminal về chế độ raw
+                    tty.setraw(sys.stdin.fileno())
+                    # Đọc một ký tự
+                    code = sys.stdin.read(1)
+                    if code:
+                        print(f"Đã nhận mã: {code}")
+                        # Xử lý đọc từng ký tự của mã
+                        speak(f"Mã của bạn là: {code}")
+                finally:
+                    # Khôi phục cài đặt terminal
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                
             except Exception as e:
                 print(f"Lỗi khi đọc input: {e}")
                 time.sleep(0.1)
@@ -661,6 +677,7 @@ def run_app():
     print("\nDanh sách dịch vụ có sẵn:")
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
+    print("\nĐang chờ quét mã...")
 
     # Khởi động thread đọc input
     app.input_thread = threading.Thread(target=app.read_input)
