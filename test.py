@@ -196,28 +196,17 @@ class MainApp:
                     if self.serial_port and self.serial_port.is_open:
                         try:
                             # Gửi họ tên đến VP 0x2100
-                            header_name = bytes([0x5A, 0xA5, 0x21, 0x00])
-                            name_data = f"Họ và Tên: {name}"
+                            vp_name = 0x2100
+                            name_data = f"Ho va Ten: {remove_accents(name)}\nCCCD: {id_cccd}\n"
                             name_bytes = name_data.encode('gbk')
                             
-                            self.serial_port.write(header_name)
-                            self.serial_port.write(bytes([0x02]))  # Mã hóa GBK
+                            # Gửi địa chỉ VP và dữ liệu
+                            self.serial_port.write(vp_name.to_bytes(2, byteorder='big'))
                             self.serial_port.write(name_bytes)
-                            self.serial_port.write(b'\x00')
                             
-                            # Gửi CCCD đến VP 0x2101
-                            header_id = bytes([0x5A, 0xA5, 0x21, 0x01])
-                            id_data = f"CCCD: {id_cccd}"
-                            id_bytes = id_data.encode('gbk')
                             
-                            self.serial_port.write(header_id)
-                            self.serial_port.write(bytes([0x02]))  # Mã hóa GBK
-                            self.serial_port.write(id_bytes)
-                            self.serial_port.write(b'\x00')
-                            
-                            # Đảm bảo dữ liệu được gửi đi
                             self.serial_port.flush()
-                            print(f"Đã gửi dữ liệu thẻ lên màn hình UART:\n{name_data}\n{id_data}")
+                            print(f"Đã gửi dữ liệu thẻ lên màn hình UART:\n{name_data}\n")
                         except Exception as e:
                             print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
 
