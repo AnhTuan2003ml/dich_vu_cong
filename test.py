@@ -199,18 +199,26 @@ class MainApp:
                             name_ascii = remove_accents(name).encode('ascii', 'ignore')
                             id_ascii = id_cccd.encode('ascii', 'ignore')
                             
-                            # Tạo chuỗi hex
-                            hex_data = f"0x{name_ascii.hex()}{id_ascii.hex()}"
+                            # Tạo dữ liệu hex
+                            data = name_ascii.hex() + id_ascii.hex()
                             
-                            # Gửi địa chỉ VP và dữ liệu hex
-                            vp_address = 0x2100
-                            self.serial_port.write(vp_address.to_bytes(2, byteorder='big'))
-                            self.serial_port.write(hex_data.encode('ascii'))
+                            # Tính độ dài dữ liệu (số ký tự ASCII)
+                            data_length = len(name_ascii) + len(id_ascii)
+                            
+                            # Tạo header và VP
+                            header = bytes([0x5A, 0xA5, data_length, 0x82])
+                            vp = bytes([0x21, 0x00])  # VP 0x2100
+                            
+                            # Gửi dữ liệu
+                            self.serial_port.write(header)
+                            self.serial_port.write(vp)
+                            self.serial_port.write(bytes.fromhex(data))
                             
                             self.serial_port.flush()
-                            print(f"Đã gửi dữ liệu hex lên màn hình UART: {hex_data}")
+                            print(f"Đã gửi dữ liệu lên màn hình UART: 5A A5 {data_length:02X} 82 21 00 {data}")
                         except Exception as e:
                             print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
+
 
                     if os.path.exists("temp/card_image.jpg"):
                         speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
