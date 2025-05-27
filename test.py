@@ -633,6 +633,10 @@ class MainApp:
                     code_text = " ".join(code)
                     speak(f"Mã của bạn là: {code_text}")
                 
+            except KeyboardInterrupt:
+                print("\nĐang thoát chương trình...")
+                self.stop_threads = True
+                break
             except Exception as e:
                 print(f"Lỗi khi đọc input: {e}")
                 time.sleep(0.1)
@@ -661,26 +665,37 @@ class MainApp:
 
 
 def run_app():
-    app = MainApp()
-    print("\nDanh sách dịch vụ có sẵn:")
-    for i, action in enumerate(app.actions, 1):
-        print(f"{i}. {action}")
-    print("\nĐang chờ quét mã...")
+    try:
+        app = MainApp()
+        print("\nDanh sách dịch vụ có sẵn:")
+        for i, action in enumerate(app.actions, 1):
+            print(f"{i}. {action}")
+        print("\nĐang chờ quét mã...")
+        print("Nhấn Ctrl+C để thoát")
 
-    # Khởi động thread đọc input
-    app.input_thread = threading.Thread(target=app.read_input)
-    app.input_thread.daemon = True
-    app.input_thread.start()
+        # Khởi động thread đọc input
+        app.input_thread = threading.Thread(target=app.read_input)
+        app.input_thread.daemon = True
+        app.input_thread.start()
 
-    while True:
-        command = app.read_serial_command()
-        if command:
-            if command == "START_LISTENING":
-                app.start_listening()
-            elif command == "EXIT":
-                app.exit_app()
-                break
-        time.sleep(0.1)
+        while True:
+            command = app.read_serial_command()
+            if command:
+                if command == "START_LISTENING":
+                    app.start_listening()
+                elif command == "EXIT":
+                    app.exit_app()
+                    break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\nĐang thoát chương trình...")
+        app.stop_threads = True
+        app.exit_app()
+    except Exception as e:
+        print(f"Lỗi không mong muốn: {e}")
+        if 'app' in locals():
+            app.stop_threads = True
+            app.exit_app()
 
 
 if __name__ == "__main__":
