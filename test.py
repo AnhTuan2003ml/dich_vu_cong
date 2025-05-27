@@ -381,22 +381,22 @@ class MainApp:
                             return "CHOOSE_SERVICE"
                         elif code == 0x02:
                             speak("Xin chào, hẹn gặp lại")
-                            # Gửi thông tin trống khi thoát
+                            # Gửi lệnh clear màn hình khi thoát
                             if self.serial_port and self.serial_port.is_open:
                                 try:
-                                    # Gửi thông tin trống đến VP 0x2100
-                                    empty_data = "Ho va ten : \nCCCD: "
-                                    empty_ascii = empty_data.encode('ascii')
-                                    header = bytes([0x5A, 0xA5, len(empty_ascii), 0x82])
+                                    # Gửi lệnh clear màn hình
+                                    clear_data = " " * 200  # Tạo chuỗi 200 khoảng trắng
+                                    clear_ascii = clear_data.encode('ascii')
+                                    header = bytes([0x5A, 0xA5, len(clear_ascii), 0x82])
                                     vp = bytes([0x21, 0x00])
                                     self.serial_port.write(header)
                                     self.serial_port.write(vp)
-                                    self.serial_port.write(empty_ascii)
+                                    self.serial_port.write(clear_ascii)
                                     
                                     self.serial_port.flush()
-                                    print("Đã gửi thông tin trống lên màn hình UART khi thoát")
+                                    print("Đã clear màn hình UART khi thoát")
                                 except Exception as e:
-                                    print(f"Lỗi khi gửi thông tin trống lên màn hình UART: {e}")
+                                    print(f"Lỗi khi clear màn hình UART: {e}")
                         elif code == 0x04:
                             speak("Đã hoàn tất dịch vụ, đang in ra.")
                         elif code == 0x03:
