@@ -186,6 +186,24 @@ class MainApp:
                     with open("temp/card_data.json", "w", encoding="utf-8") as f:
                         json.dump(card_data, f, ensure_ascii=False, indent=4)
 
+                    # Gửi dữ liệu thẻ lên màn hình UART
+                    if self.serial_port and self.serial_port.is_open:
+                        try:
+                            # Header cho màn hình
+                            header = bytes([0x5A, 0xA5, 0x10, 0x00])  # 0x1000 là địa chỉ hiển thị
+                            
+                            # Format dữ liệu thẻ
+                            display_data = f"Họ tên: {name}\nCCCD: {id_cccd}"
+                            display_bytes = display_data.encode('utf-8')
+                            
+                            # Gửi dữ liệu
+                            self.serial_port.write(header)
+                            self.serial_port.write(display_bytes)
+                            self.serial_port.write(b'\x00')  # Kết thúc chuỗi
+                            print("Đã gửi dữ liệu thẻ lên màn hình UART")
+                        except Exception as e:
+                            print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
+
                     if os.path.exists("temp/card_image.jpg"):
                         speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
                         captured_face_path = self.capture_face()
