@@ -98,8 +98,8 @@ class MainApp:
 
         # Thêm biến để kiểm soát thread
         self.is_reading_card = False
-        self.bard_thread = None
-        self.stop_bard_thread = False
+        self.input_thread = None
+        self.stop_threads = False
 
         # Khởi tạo kết nối serial
         try:
@@ -616,11 +616,28 @@ class MainApp:
         self.current_user = None
         print("Đã reset trạng thái xác thực")
 
+    def read_input(self):
+        """Đọc input từ người dùng"""
+        while not self.stop_threads:
+            try:
+                if self.is_reading_card:
+                    time.sleep(0.1)
+                    continue
+
+                code = input().strip()
+                if code:
+                    # Xử lý đọc từng ký tự của mã
+                    code_text = " ".join(code)
+                    speak(f"Mã của bạn là: {code_text}")
+            except Exception as e:
+                print(f"Lỗi khi đọc input: {e}")
+                time.sleep(0.1)
+
     def exit_app(self):
         """Thoát ứng dụng"""
-        self.stop_bard_thread = True
-        if self.bard_thread:
-            self.bard_thread.join()
+        self.stop_threads = True
+        if self.input_thread:
+            self.input_thread.join()
         speak("Rất vui được phục vụ bạn, hẹn gặp lại!")
         file_path = "greeting.mp3"
         if os.path.exists(file_path):
@@ -638,29 +655,6 @@ class MainApp:
         if hasattr(self, 'audio') and self.audio:
             self.audio.terminate()
 
-    def read_bard_code(self):
-        """Đọc mã Bard từ file event"""
-        while not self.stop_bard_thread:
-            try:
-                if self.is_reading_card:
-                    time.sleep(0.1)
-                    continue
-
-                event_path = "DEV/INPUT/EVENT3"
-                if os.path.exists(event_path):
-                    with open(event_path, 'r', encoding='utf-8') as f:
-                        code = f.read().strip()
-                        if code:
-                            # Xử lý đọc từng ký tự của mã
-                            code_text = " ".join(code)
-                            speak(f"Mã của bạn là: {code_text}")
-                            # Xóa nội dung file sau khi đọc
-                            open(event_path, 'w', encoding='utf-8').close()
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"Lỗi khi đọc mã: {e}")
-                time.sleep(0.1)
-
 
 def run_app():
     app = MainApp()
@@ -668,10 +662,10 @@ def run_app():
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
 
-    # Khởi động thread đọc Bard code
-    app.bard_thread = threading.Thread(target=app.read_bard_code)
-    app.bard_thread.daemon = True
-    app.bard_thread.start()
+    # Khởi động thread đọc input
+    app.input_thread = threading.Thread(target=app.read_input)
+    app.input_thread.daemon = True
+    app.input_thread.start()
 
     while True:
         command = app.read_serial_command()
