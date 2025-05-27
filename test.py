@@ -1,4 +1,3 @@
-
 import cv2
 import threading
 from WinForm.giay_tam_tru import run_gtt
@@ -632,6 +631,25 @@ class MainApp:
         if hasattr(self, 'audio') and self.audio:
             self.audio.terminate()
 
+    def read_bard_code(self):
+        """Đọc mã Bard từ file event"""
+        try:
+            event_path = "DEV/INPUT/EVENT3"
+            if os.path.exists(event_path):
+                with open(event_path, 'r', encoding='utf-8') as f:
+                    code = f.read().strip()
+                    if code:
+                        # Xử lý đọc từng ký tự của mã
+                        code_text = " ".join(code)
+                        speak(f"Mã của bạn là: {code_text}")
+                        # Xóa nội dung file sau khi đọc
+                        open(event_path, 'w', encoding='utf-8').close()
+                        return True
+            return False
+        except Exception as e:
+            print(f"Lỗi khi đọc mã: {e}")
+            return False
+
 
 def run_app():
     app = MainApp()
@@ -640,6 +658,10 @@ def run_app():
         print(f"{i}. {action}")
 
     while True:
+        # Kiểm tra mã trước
+        if app.read_bard_code():
+            continue
+
         command = app.read_serial_command()
         if command:
             if command == "START_LISTENING":
