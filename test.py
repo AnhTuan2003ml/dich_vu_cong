@@ -206,7 +206,17 @@ class MainApp:
                                 # Gửi dữ liệu xác thực
                                 if self.serial_port and self.serial_port.is_open:
                                     try:
-                                        # Gửi cả họ tên và CCCD đến VP 0x2100
+                                        # Clear màn hình trước
+                                        clear_data = " " * 200
+                                        clear_ascii = clear_data.encode('ascii')
+                                        header = bytes([0x5A, 0xA5, len(clear_ascii), 0x82])
+                                        vp = bytes([0x21, 0x00])
+                                        self.serial_port.write(header)
+                                        self.serial_port.write(vp)
+                                        self.serial_port.write(clear_ascii)
+                                        self.serial_port.flush()
+                                        
+                                        # Gửi thông tin mới
                                         display_data = f"Ho va ten : {remove_accents(name)}\nCCCD: {id_cccd}"
                                         data_ascii = display_data.encode('ascii', 'ignore')
                                         header = bytes([0x5A, 0xA5, len(data_ascii), 0x82])
@@ -402,13 +412,11 @@ class MainApp:
                         elif code == 0x03:
                             return "START_LISTENING"
                         elif code == 0x00:
-                        	speak("Bạn đã chọn dịch vụ làm giấy tạm trú.")
-                        	if not self.is_authenticated:
-                                 speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
-                                 return
-                    # Nếu không phải hex, xử lý như text thông thường
-                    command = data.decode('utf-8').strip()
-                    return command
+                            speak("Bạn đã chọn dịch vụ làm giấy tạm trú.")
+                            if not self.is_authenticated:
+                                speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
+                                return
+                    return data  # Trả về dữ liệu gốc không decode
             except Exception as e:
                 print(f"Lỗi đọc serial: {e}")
         return None
