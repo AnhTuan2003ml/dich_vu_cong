@@ -1,3 +1,4 @@
+
 import cv2
 import threading
 from WinForm.giay_tam_tru import run_gtt
@@ -16,9 +17,6 @@ import os
 import pycuda.autoinit
 import pycuda.driver as cuda
 import gi
-from pyzbar.pyzbar import decode
-import evdev
-from evdev import categorize, ecodes
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 
@@ -28,49 +26,67 @@ Gst.init(None)
 MODEL_PATH = "trained_model"
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
-BARCODE_DEVICE = '/dev/input/event3'  # Đường dẫn đến thiết bị quét mã vạch
 card_service_socket = socketio.Client()
 
-class BarcodeScanner:
-    def __init__(self):
-        self.device = None
-        self.is_running = False
-        self.initialize_scanner()
 
-    def initialize_scanner(self):
+class JetsonCamera:
+    def __init__(self):
+        self.camera = None
+        self.is_running = False
+        self.initialize_camera()
+
+    def initialize_camera(self):
         try:
-            self.device = evdev.InputDevice(BARCODE_DEVICE)
+            self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            # Bạn có thể thử không set FOURCC, hoặc set sang 'YUYV' nếu 'MJPG'
+            # không hoạt động
+            self.camera.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(
+                    *'MJPG'))
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+            if not self.camera.isOpened():
+                raise Exception("Không thể mở camera")
+
+            ret, frame = self.camera.read()
+            if not ret or frame is None:
+                raise Exception("Không thể đọc frame từ camera")
+
+            # Chuyển đổi màu nếu cần
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUYV)
+            except cv2.error:
+                pass
+
             self.is_running = True
-            print(f"✅ Đã khởi tạo máy quét mã vạch thành công: {self.device.name}")
+            print("✅ Đã khởi tạo camera thành công")
         except Exception as e:
-            print(f"❌ Lỗi khởi tạo máy quét mã vạch: {e}")
+            print(f"❌ Lỗi khởi tạo camera: {e}")
             self.is_running = False
 
-    def read_barcode(self):
-        """Đọc mã vạch từ thiết bị"""
-        if not self.is_running or self.device is None:
-            return None
+    def read(self):
+        if not self.is_running or self.camera is None:
+            return False, None
+
+        ret, frame = self.camera.read()
+        if not ret or frame is None:
+            return False, None
 
         try:
-            barcode = []
-            for event in self.device.read_loop():
-                if event.type == ecodes.EV_KEY and event.value == 1:  # Key down
-                    if event.code == ecodes.KEY_ENTER:
-                        return ''.join(barcode)
-                    else:
-                        key = evdev.events.keys[event.code]
-                        if isinstance(key, list):
-                            key = key[0]
-                        barcode.append(key)
-        except Exception as e:
-            print(f"Lỗi khi đọc mã vạch: {e}")
-            return None
+            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUYV)
+        except cv2.error:
+            pass
+
+        return ret, frame
 
     def release(self):
-        """Giải phóng thiết bị"""
-        if self.device is not None:
-            self.device.close()
+        """Giải phóng camera"""
+        if self.camera is not None:
+            self.camera.release()
             self.is_running = False
+
 
 class MainApp:
     def __init__(self):
@@ -92,19 +108,6 @@ class MainApp:
         # Trạng thái xác thực
         self.is_authenticated = False
         self.current_user = None
-
-        # Thêm trạng thái đọc mã vạch
-        self.is_reading_barcode = False
-        self.auto_scan_barcode = True
-        self.barcode_scan_thread = None
-        self.last_barcode = None
-        self.last_speak_time = 0
-        self.speak_cooldown = 5
-
-        # Khởi tạo máy quét mã vạch
-        self.barcode_scanner = BarcodeScanner()
-        if not self.barcode_scanner.is_running:
-            speak("Không thể khởi tạo máy quét mã vạch. Vui lòng kiểm tra thiết bị.")
 
         # Kết nối với server thẻ
         try:
@@ -161,17 +164,14 @@ class MainApp:
             "tra cứu bảo hiểm", "cấp lại bằng lái xe",
             "làm giấy tạm trú", "đăng ký hộ khẩu",
             "cấp đổi căn cước công dân", "đăng ký kết hôn",
-            "khai sinh cho trẻ em", "chứng thực giấy tờ",
-            "đọc mã QR"  # Thêm hành động đọc mã QR
+            "khai sinh cho trẻ em", "chứng thực giấy tờ"
         ]
 
     def handle_card_event(self, data):
         """Xử lý sự kiện từ thẻ"""
+        
         event_id = data.get("id")
         if event_id == 2:  # Đọc thẻ thành công
-            # Dừng quét mã vạch khi bắt đầu xử lý thẻ
-            self.stop_auto_barcode_scan()
-            
             card_data = data.get("data", {})
             name = card_data.get("personName", "người dùng")
             id_cccd = card_data.get("idCode", "")
@@ -185,24 +185,24 @@ class MainApp:
                     speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
                     captured_face_path = self.capture_face()
                     if captured_face_path:
-                        speak("Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
-                        matched = self.compare_faces("temp/card_image.jpg", captured_face_path)
+                        speak(
+                            "Đã chụp ảnh khuôn mặt của bạn. Đang so sánh với ảnh thẻ...")
+                        matched = self.compare_faces(
+                            "temp/card_image.jpg", captured_face_path)
                         if matched:
                             speak("Khuôn mặt xác thực thành công!")
                             self.is_authenticated = True
                             self.current_user = name
                         else:
-                            speak("Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
+                            speak(
+                                "Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
                             self.is_authenticated = False
                             self.current_user = None
-                            # Tiếp tục quét mã vạch khi xác thực thất bại
-                            self.start_auto_barcode_scan()
                     else:
-                        speak("Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
+                        speak(
+                            "Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
                         self.is_authenticated = False
                         self.current_user = None
-                        # Tiếp tục quét mã vạch khi không chụp được ảnh
-                        self.start_auto_barcode_scan()
         elif event_id == 4:  # Nhận ảnh từ thẻ
             img_data = data.get("data", {}).get("img_data")
             if img_data:
@@ -343,52 +343,6 @@ class MainApp:
                 os.remove(captured_video_path)
             return False
 
-    def read_qr_code(self):
-        """Đọc mã QR từ camera USB và đọc nội dung bằng giọng nói"""
-        if not self.camera.is_running:
-            speak("Camera không khả dụng")
-            return
-
-        self.is_reading_barcode = True
-        speak("Đang bắt đầu đọc mã QR. Vui lòng đưa mã QR vào trước camera")
-
-        try:
-            last_barcode = None
-            consecutive_matches = 0
-            required_matches = 3  # Số lần đọc giống nhau liên tiếp để xác nhận
-
-            while self.is_reading_barcode:
-                barcode = self.barcode_scanner.read_barcode()
-                if barcode:
-                    current_time = time.time()
-                    if current_time - self.last_speak_time >= self.speak_cooldown:
-                        speak(f"Mã vạch: {barcode}")
-                        print(f"Đã đọc mã vạch: {barcode}")
-                        self.last_speak_time = current_time
-                        self.last_barcode = barcode
-                        consecutive_matches += 1
-                        if consecutive_matches >= required_matches:
-                            # Đọc nội dung mã QR
-                            speak(f"Nội dung mã QR là: {barcode}")
-                            print(f"Đã đọc mã QR: {barcode}")
-                            
-                            # Dừng đọc sau khi đã tìm thấy và đọc xong
-                            self.is_reading_barcode = False
-                            break
-                    else:
-                        consecutive_matches = 1
-                        last_barcode = barcode
-
-                # Thoát nếu nhấn 'q'
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-        except Exception as e:
-            print(f"Lỗi khi đọc mã QR: {e}")
-            speak("Đã xảy ra lỗi khi đọc mã QR")
-        finally:
-            self.is_reading_barcode = False
-
     def read_serial_command(self):
         """Đọc lệnh từ cổng serial"""
         if self.serial_port and self.serial_port.is_open:
@@ -408,8 +362,6 @@ class MainApp:
                             return "GOODBYE"
                         elif code == 0x03:
                             return "START_LISTENING"
-                        elif code == 0x04:  # Thêm mã mới cho đọc QR
-                            return "READ_QR"
                     # Nếu không phải hex, xử lý như text thông thường
                     command = data.decode('utf-8').strip()
                     return command
@@ -609,15 +561,11 @@ class MainApp:
 
     def perform_action(self, command):
         """Thực hiện hành động dựa trên lệnh"""
+        if not self.is_authenticated:
+            speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
+            return
+
         try:
-            if command == "đọc mã QR":
-                self.read_qr_code()
-                return
-
-            if not self.is_authenticated:
-                speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
-                return
-
             if command == "tra cứu bảo hiểm":
                 speak("Bạn muốn tra cứu bảo hiểm gì?")
             elif command == "cấp lại bằng lái xe":
@@ -645,45 +593,6 @@ class MainApp:
         except Exception as e:
             print(f"Lỗi khi thực hiện hành động: {e}")
 
-    def start_auto_barcode_scan(self):
-        """Bắt đầu tự động quét mã vạch trong một thread riêng"""
-        if self.barcode_scan_thread is None or not self.barcode_scan_thread.is_alive():
-            self.auto_scan_barcode = True
-            self.barcode_scan_thread = threading.Thread(target=self.auto_scan_barcode_loop)
-            self.barcode_scan_thread.daemon = True
-            self.barcode_scan_thread.start()
-            print("Đã bắt đầu tự động quét mã vạch")
-
-    def auto_scan_barcode_loop(self):
-        """Vòng lặp tự động quét mã vạch"""
-        while self.auto_scan_barcode:
-            try:
-                if not self.barcode_scanner.is_running:
-                    time.sleep(1)
-                    continue
-
-                barcode = self.barcode_scanner.read_barcode()
-                if barcode:
-                    current_time = time.time()
-                    if current_time - self.last_speak_time >= self.speak_cooldown:
-                        speak(f"Mã vạch: {barcode}")
-                        print(f"Đã đọc mã vạch: {barcode}")
-                        self.last_speak_time = current_time
-                        self.last_barcode = barcode
-
-            except Exception as e:
-                print(f"Lỗi khi tự động quét mã vạch: {e}")
-                time.sleep(1)
-
-            time.sleep(0.1)
-
-    def stop_auto_barcode_scan(self):
-        """Dừng tự động quét mã vạch"""
-        self.auto_scan_barcode = False
-        if self.barcode_scan_thread and self.barcode_scan_thread.is_alive():
-            self.barcode_scan_thread.join(timeout=1)
-        print("Đã dừng tự động quét mã vạch")
-
     def clear_cccd_info(self):
         """Xóa thông tin CCCD và reset trạng thái xác thực"""
         if os.path.exists("temp/card_image.jpg"):
@@ -703,8 +612,6 @@ class MainApp:
         self.is_authenticated = False
         self.current_user = None
         print("Đã reset trạng thái xác thực")
-        # Tiếp tục quét mã vạch sau khi xóa thông tin thẻ
-        self.start_auto_barcode_scan()
 
     def exit_app(self):
         """Thoát ứng dụng"""
@@ -720,9 +627,6 @@ class MainApp:
 
     def __del__(self):
         """Dọn dẹp khi đóng chương trình"""
-        self.stop_auto_barcode_scan()
-        if hasattr(self, 'barcode_scanner'):
-            self.barcode_scanner.release()
         if hasattr(self, 'camera'):
             self.camera.release()
         if hasattr(self, 'audio') and self.audio:
@@ -735,20 +639,12 @@ def run_app():
     for i, action in enumerate(app.actions, 1):
         print(f"{i}. {action}")
 
-    # Bắt đầu tự động quét mã vạch khi khởi động
-    app.start_auto_barcode_scan()
-
     while True:
         command = app.read_serial_command()
         if command:
             if command == "START_LISTENING":
                 app.start_listening()
-            elif command == "READ_QR":
-                app.stop_auto_barcode_scan()
-                app.read_qr_code()
-                app.start_auto_barcode_scan()
             elif command == "EXIT":
-                app.stop_auto_barcode_scan()
                 app.exit_app()
                 break
         time.sleep(0.1)
