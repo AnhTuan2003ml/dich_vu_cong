@@ -187,7 +187,7 @@ class MainApp:
                 name = card_data.get("personName", "người dùng")
                 id_cccd = card_data.get("idCode", "")
                 if (id_cccd):
-                    speak(f"Xin chào, {name}!")
+                    speak(f"Xin chào công dân, {name}!")
                     os.makedirs("temp", exist_ok=True)
                     with open("temp/card_data.json", "w", encoding="utf-8") as f:
                         json.dump(card_data, f, ensure_ascii=False, indent=4)
@@ -196,7 +196,7 @@ class MainApp:
                     if self.serial_port and self.serial_port.is_open:
                         try:
                             # Chuyển dữ liệu thành ASCII
-                            name_ascii = remove_accents(name).encode('ascii', 'ignore')
+                            name_ascii = remove_accents(name +'\n').encode('ascii', 'ignore')
                             id_ascii = id_cccd.encode('ascii', 'ignore')
                             
                             # Tạo dữ liệu hex
@@ -218,8 +218,6 @@ class MainApp:
                             print(f"Đã gửi dữ liệu lên màn hình UART: 5A A5 {data_length:02X} 82 21 00 {data}")
                         except Exception as e:
                             print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
-
-
                     if os.path.exists("temp/card_image.jpg"):
                         speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
                         captured_face_path = self.capture_face()
@@ -257,7 +255,7 @@ class MainApp:
         if not self.camera.is_running:
             print("Camera không khả dụng")
             return None
-
+        speak(f"Chuẩn bị xác thực khuôn mặt")
         # Đếm ngược 3 giây
         for i in range(3, 0, -1):
             speak(f"{i}")
@@ -611,10 +609,10 @@ class MainApp:
             if command == "tra cứu bảo hiểm":
                 speak("Bạn muốn tra cứu bảo hiểm gì?")
             elif command == "cấp lại bằng lái xe":
-                speak("Mời bạn điền vào form sau!")
-                from WinForm.cap_lai_bang_lai_xe import run
-                run()
-                speak("Bản in đang được tạo. Vui lòng chờ...")
+                speak("Hệ thống đang in mẫu giấy cấp lại bằng lái xe. Vui lòng chờ.")
+                time.sleep(1)
+                
+                speak("Vui lòng điền vào phiếu in rồi mang ra quầy số 5.")
             elif command == "làm giấy tạm trú":
                 speak("Hệ thống đang in mẫu giấy tạm trú. Quý khách vui lòng điền vào biểu mẫu sau. Sau đó mang đến quầy số 6")
                 run_gtt()
