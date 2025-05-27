@@ -186,23 +186,9 @@ class MainApp:
                     with open("temp/card_data.json", "w", encoding="utf-8") as f:
                         json.dump(card_data, f, ensure_ascii=False, indent=4)
 
-                    # Gửi dữ liệu thẻ lên màn hình UART
-                    if self.serial_port and self.serial_port.is_open:
-                        try:
-                            # Header cho màn hình
-                            header = bytes([0x5A, 0xA5, 0x10, 0x00])  # 0x1000 là địa chỉ hiển thị
-                            
-                            # Format dữ liệu thẻ
-                            display_data = f"Họ tên: {name}\nCCCD: {id_cccd}"
-                            display_bytes = display_data.encode('utf-8')
-                            
-                            # Gửi dữ liệu
-                            self.serial_port.write(header)
-                            self.serial_port.write(display_bytes)
-                            self.serial_port.write(b'\x00')  # Kết thúc chuỗi
-                            print("Đã gửi dữ liệu thẻ lên màn hình UART")
-                        except Exception as e:
-                            print(f"Lỗi khi gửi dữ liệu lên màn hình UART: {e}")
+                    # Hiển thị thông tin thẻ lên màn hình LCD
+                    display_text = f"Họ và tên: {name}\nSố CCCD: {id_cccd}"
+                    self.send_to_lcd(display_text)
 
                     if os.path.exists("temp/card_image.jpg"):
                         speak("Đã nhận diện khuôn mặt từ thẻ CCCD!")
@@ -214,14 +200,20 @@ class MainApp:
                                 speak("Khuôn mặt xác thực thành công!")
                                 self.is_authenticated = True
                                 self.current_user = name
+                                # Hiển thị thông báo xác thực thành công
+                                self.send_to_lcd("Xác thực thành công!")
                             else:
                                 speak("Khuôn mặt không khớp với ảnh trên thẻ. Vui lòng thử lại.")
                                 self.is_authenticated = False
                                 self.current_user = None
+                                # Hiển thị thông báo xác thực thất bại
+                                self.send_to_lcd("Xác thực thất bại!")
                         else:
                             speak("Không thể chụp ảnh khuôn mặt. Vui lòng kiểm tra camera.")
                             self.is_authenticated = False
                             self.current_user = None
+                            # Hiển thị thông báo lỗi camera
+                            self.send_to_lcd("Lỗi camera!")
             elif event_id == 4:  # Nhận ảnh từ thẻ
                 img_data = data.get("data", {}).get("img_data")
                 if img_data:
@@ -370,30 +362,57 @@ class MainApp:
             try:
                 if self.serial_port.in_waiting:
                     data = self.serial_port.readline()
-                    # Kiểm tra nếu dữ liệu là hex
+                    # Kiểm tra nếu dữ liệu là hex và có header 0x5A 0xA5
                     if len(data) >= 9 and data[0] == 0x5A and data[1] == 0xA5:
-                        # Lấy mã từ byte cuối cùng
-                        code = data[-1]
-                        if code == 0x01:
-                            speak("Mời bạn chọn dịch vụ")
-                            return "CHOOSE_SERVICE"
-                        elif code == 0x02:
-                            speak("Xin chào, hẹn gặp lại")
-                        elif code == 0x04:
-                            speak("Đã hoàn tất dịch vụ, đang in ra.")
-                        elif code == 0x03:
-                            return "START_LISTENING"
-                        elif code == 0x00:
-                        	speak("Bạn đã chọn dịch vụ làm giấy tạm trú.")
-                        	if not self.is_authenticated:
-                                 speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
-                                 return
+                        # Kiểm tra địa chỉ nhận từ LCD (0x5500)
+                        if data[2] == 0x55 and data[3] == 0x00:
+                            # Lấy mã từ byte cuối cùng
+                            code = data[-1]
+                            if code == 0x01:
+                                speak("Mời bạn chọn dịch vụ")
+                                return "CHOOSE_SERVICE"
+                            elif code == 0x02:
+                                speak("Xin chào, hẹn gặp lại")
+                            elif code == 0x04:
+                                speak("Đã hoàn tất dịch vụ, đang in ra.")
+                            elif code == 0x03:
+                                return "START_LISTENING"
+                            elif code == 0x00:
+                                speak("Bạn đã chọn dịch vụ làm giấy tạm trú.")
+                                if not self.is_authenticated:
+                                    speak("Vui lòng quét thẻ và xác thực khuôn mặt trước khi sử dụng dịch vụ.")
+                                    return
                     # Nếu không phải hex, xử lý như text thông thường
                     command = data.decode('utf-8').strip()
                     return command
             except Exception as e:
                 print(f"Lỗi đọc serial: {e}")
         return None
+
+    def send_to_lcd(self, text):
+        """Gửi text lên màn hình LCD tại vị trí 0x2003"""
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                # Header cho màn hình với địa chỉ hiển thị 0x2003
+                header = bytes([0x5A, 0xA5, 0x20, 0x03])
+                
+                # Xử lý text với font ID
+                result_bytes = bytearray()
+                for char in text:
+                    # Kiểm tra nếu là ký tự ASCII
+                    if ord(char) < 128:
+                        result_bytes.extend(bytes([0x00, ord(char)]))  # Font ID 0x00 cho ASCII
+                    else:
+                        # Ký tự tiếng Việt - sử dụng font ID 0x02
+                        result_bytes.extend(bytes([0x02, ord(char)]))
+                
+                # Gửi dữ liệu
+                self.serial_port.write(header)
+                self.serial_port.write(result_bytes)
+                self.serial_port.write(b'\x00')  # Kết thúc chuỗi
+                print("Đã gửi text lên màn hình LCD")
+            except Exception as e:
+                print(f"Lỗi khi gửi text lên màn hình LCD: {e}")
 
     def start_listening(self):
         """Bắt đầu lắng nghe giọng nói"""
