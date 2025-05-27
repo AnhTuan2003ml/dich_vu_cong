@@ -1,3 +1,4 @@
+
 import cv2
 import threading
 from WinForm.giay_tam_tru import run_gtt
@@ -15,12 +16,9 @@ import socketio
 import os
 import pycuda.autoinit
 import pycuda.driver as cuda
-
-# ⚠️ Import gi sau tất cả các thư viện khác
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
-
 
 # Initialize GStreamer
 Gst.init(None)
@@ -38,29 +36,49 @@ class JetsonCamera:
         self.initialize_camera()
 
     def initialize_camera(self):
-        """Khởi tạo camera đơn giản"""
         try:
-            self.camera = cv2.VideoCapture(0)  # Mở camera mặc định
+            self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            # Bạn có thể thử không set FOURCC, hoặc set sang 'YUYV' nếu 'MJPG'
+            # không hoạt động
+            self.camera.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(
+                    *'MJPG'))
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
             if not self.camera.isOpened():
                 raise Exception("Không thể mở camera")
-            
-            # Kiểm tra camera có hoạt động không
+
             ret, frame = self.camera.read()
             if not ret or frame is None:
                 raise Exception("Không thể đọc frame từ camera")
-            
+
+            # Chuyển đổi màu nếu cần
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUYV)
+            except cv2.error:
+                pass
+
             self.is_running = True
-            print("Đã khởi tạo camera thành công")
+            print("✅ Đã khởi tạo camera thành công")
         except Exception as e:
-            print(f"Lỗi khởi tạo camera: {e}")
+            print(f"❌ Lỗi khởi tạo camera: {e}")
             self.is_running = False
 
     def read(self):
-        """Đọc frame từ camera"""
         if not self.is_running or self.camera is None:
             return False, None
-        
+
         ret, frame = self.camera.read()
+        if not ret or frame is None:
+            return False, None
+
+        try:
+            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUYV)
+        except cv2.error:
+            pass
+
         return ret, frame
 
     def release(self):
@@ -151,6 +169,7 @@ class MainApp:
 
     def handle_card_event(self, data):
         """Xử lý sự kiện từ thẻ"""
+        
         event_id = data.get("id")
         if event_id == 2:  # Đọc thẻ thành công
             card_data = data.get("data", {})
@@ -226,7 +245,7 @@ class MainApp:
             start_time = time.time()
             face_detected = False
 
-            while time.time() - start_time < 5:  # Ghi video trong 5 giây
+            while time.time() - start_time < 7:  # Ghi video trong 5 giây
                 ret, frame = self.camera.read()
                 if not ret or frame is None:
                     continue
@@ -239,7 +258,8 @@ class MainApp:
                     face_detected = True
                     # Vẽ khung xung quanh khuôn mặt
                     top, right, bottom, left = face_locations[0]
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                    cv2.rectangle(
+                        frame, (left, top), (right, bottom), (0, 255, 0), 2)
 
                 out.write(frame)
 
@@ -261,83 +281,61 @@ class MainApp:
             return None
 
     def compare_faces(self, card_image_path, captured_video_path):
-        """So sánh khuôn mặt từ video với ảnh trên CCCD"""
         try:
-            # Đọc và mã hóa khuôn mặt từ ảnh CCCD
             card_image = face_recognition.load_image_file(card_image_path)
             card_face_locations = face_recognition.face_locations(card_image)
-
             if not card_face_locations:
                 print("Không tìm thấy khuôn mặt trong ảnh thẻ CCCD")
                 return False
+            card_face_encoding = face_recognition.face_encodings(
+                card_image, card_face_locations)[0]
 
-            card_face_encoding = face_recognition.face_encodings(card_image, card_face_locations)[0]
-
-            # Mở video đã ghi
             cap = cv2.VideoCapture(captured_video_path)
             if not cap.isOpened():
                 print("Không thể mở video đã ghi")
                 return False
 
-            similarities = []
+            SIMILARITY_THRESHOLD = 0.55
             frame_count = 0
-            processed_frames = 0
+            frame_skip = 3  # chỉ xử lý mỗi 3 frame 1 lần
 
-            while cap.isOpened():
+            while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
                 frame_count += 1
-                # Xử lý mỗi 5 frame để tăng hiệu suất
-                if frame_count % 5 != 0:
+                if frame_count % frame_skip != 0:
                     continue
 
-                processed_frames += 1
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_locations = face_recognition.face_locations(rgb_frame)
+                # Resize frame nhỏ hơn để tăng tốc
+                small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
+                face_locations = face_recognition.face_locations(
+                    rgb_small_frame)
                 if face_locations:
-                    face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
-                    face_distance = face_recognition.face_distance([card_face_encoding], face_encoding)[0]
+                    face_encoding = face_recognition.face_encodings(
+                        rgb_small_frame, face_locations)[0]
+                    face_distance = face_recognition.face_distance(
+                        [card_face_encoding], face_encoding)[0]
                     similarity = 1 - face_distance
-                    similarities.append(similarity)
-                    print(f"Frame {frame_count}: Độ tương đồng = {similarity:.2%}")
+
+                    print(
+                        f"Frame {frame_count}: similarity = {similarity:.2%}")
+
+                    if similarity >= SIMILARITY_THRESHOLD:
+                        print("Xác thực khuôn mặt thành công")
+                        cap.release()
+                        if os.path.exists(captured_video_path):
+                            os.remove(captured_video_path)
+                        return True
 
             cap.release()
-
-            if not similarities:
-                print("Không tìm thấy khuôn mặt trong video")
-                return False
-
-            # Tính toán độ tương đồng trung bình và độ lệch chuẩn
-            avg_similarity = sum(similarities) / len(similarities)
-            std_dev = np.std(similarities)
-            max_similarity = max(similarities)
-            min_similarity = min(similarities)
-
-            print(f"\nThống kê so sánh khuôn mặt:")
-            print(f"Số frame đã xử lý: {processed_frames}")
-            print(f"Độ tương đồng trung bình: {avg_similarity:.2%}")
-            print(f"Độ tương đồng cao nhất: {max_similarity:.2%}")
-            print(f"Độ tương đồng thấp nhất: {min_similarity:.2%}")
-            print(f"Độ lệch chuẩn: {std_dev:.2%}")
-
-            # Ngưỡng xác thực
-            SIMILARITY_THRESHOLD = 0.6
-            STD_DEV_THRESHOLD = 0.15
-
-            # Kiểm tra điều kiện xác thực
-            if avg_similarity >= SIMILARITY_THRESHOLD and std_dev <= STD_DEV_THRESHOLD:
-                print("Xác thực khuôn mặt thành công")
-                if os.path.exists(captured_video_path):
-                    os.remove(captured_video_path)
-                return True
-            else:
-                print("Xác thực khuôn mặt thất bại")
-                if os.path.exists(captured_video_path):
-                    os.remove(captured_video_path)
-                return False
+            print("Xác thực khuôn mặt thất bại")
+            if os.path.exists(captured_video_path):
+                os.remove(captured_video_path)
+            return False
 
         except Exception as e:
             print(f"Lỗi khi so sánh khuôn mặt: {e}")
